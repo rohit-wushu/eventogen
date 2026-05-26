@@ -1,0 +1,36 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "@react-oauth/google": "^0.13.5",
+    "@vitejs/plugin-react": "^5.1.4",
+    "axios": "^1.13.5",
+    "bootstrap": "^5.3.8",
+    "chart.js": "^4.5.1",
+    "cropperjs": "^1.6.2",
+    "html-to-image": "^1.11.13",
+    "html5-qrcode": "^2.3.8",
+    "jspdf": "^4.1.0",
+    "jszip": "^3.10.1",
+    "qr-code-styling": "^1.9.2",
+    "qrcode": "^1.5.4",
+    "react-bootstrap": "^2.10.10",
+    "react-chartjs-2": "^5.3.1",
+    "react-cropper": "^2.3.3",
+    "react-draggable": "^4.5.0",
+    "react-icons": "^5.5.0",
+    "react-router-dom": "^7.13.0",
+    "recharts": "^3.8.1"
+  }
+}

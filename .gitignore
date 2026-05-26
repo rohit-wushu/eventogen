@@ -1,0 +1,60 @@
+# Dependencies — reinstall with `npm install`
+node_modules/
+**/node_modules/
+
+# Build artifacts
+dist/
+build/
+**/dist/
+**/build/
+
+# Environment files — secrets, API keys, DB credentials. NEVER commit.
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+frontend/.env.development
+frontend/.env.production
+# Keep .env.example so collaborators know what vars to set.
+!**/.env.example
+
+# Database dumps / backups
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+
+# User-uploaded content (kept locally, not in repo)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# OS junk
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage / tests
+coverage/
+.nyc_output/
+
+# Claude Code project-local config
+.claude/
+
+# Misc
+*.pem
+.cache/
