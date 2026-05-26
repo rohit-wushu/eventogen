@@ -1,0 +1,2 @@
+# eventogen
+Event Management Software
