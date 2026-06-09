@@ -133,7 +133,7 @@ const parseNotifyEmails = (raw) => {
 
 // Form-uploaded files go through the shared storage adapter (S3 if configured,
 // else local disk) so the app can run with multiple backend instances.
-const upload = createUpload('form', { limits: { fileSize: 20 * 1024 * 1024 } });
+const upload = createUpload('form', { limits: { fileSize: 20 * 1024 * 1024 }, source: 'forms' });
 
 // ──────────────────────────────────────────────────────────────
 // Helpers

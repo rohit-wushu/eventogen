@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Alert, InputGroup } from 'react-bootstrap';
 import { getUsers, inviteUser, updateUser, deleteUser, getEvents, deleteInvitation } from '../services/api';
+import AsyncButton from '../components/AsyncButton';
 import { useAuth } from '../context/AuthContext';
 import { BsPlus, BsPencil, BsTrash, BsPeople, BsClipboard, BsListUl, BsDiagram3, BsEnvelopeAtFill, BsShieldLockFill, BsCalendarEventFill, BsClipboardCheck, BsCheckCircleFill, BsExclamationTriangleFill, BsEnvelopePaperFill, BsXLg, BsSendFill, BsPersonGear, BsSliders } from 'react-icons/bs';
 
@@ -371,16 +372,31 @@ export default function UsersPage() {
                                 )}
 
                                 <div className="invite-field">
-                                    <label className="invite-label"><BsEnvelopeAtFill /> Email Address</label>
+                                    <label className="invite-label">
+                                        <BsEnvelopeAtFill /> Email Address
+                                        {editing && editing.status === 'accepted' && currentUser?.role === 'admin' && (
+                                            <span className="invite-label-opt">(editable — admin only)</span>
+                                        )}
+                                    </label>
                                     <input
                                         type="email"
                                         className="invite-input"
-                                        readOnly={editing}
+                                        /* Admin can change the email of any existing user.
+                                           Managers and pending invites stay read-only so
+                                           a manager can't silently reassign someone else's
+                                           sign-in. Pending invites carry the email as a
+                                           token key, so editing it would orphan the link. */
+                                        readOnly={editing && (currentUser?.role !== 'admin' || editing.status !== 'accepted')}
                                         value={form.email}
                                         onChange={e => setForm({ ...form, email: e.target.value })}
                                         placeholder="name@company.com"
                                         autoFocus={!editing}
                                     />
+                                    {editing && editing.status === 'accepted' && currentUser?.role === 'admin' && form.email !== editing.email && (
+                                        <div style={{ fontSize: '0.72rem', color: 'var(--accent-amber, #f59e0b)', marginTop: 4 }}>
+                                            Changing this updates the user's sign-in email. They'll need to use the new address from their next login.
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="invite-field">
@@ -603,9 +619,10 @@ export default function UsersPage() {
                                 <button className="invite-btn-ghost" onClick={() => { setShow(false); setSuccessLink(''); setEmailStatus(null); }}>
                                     Cancel
                                 </button>
-                                <button className="invite-btn-primary" onClick={handleSave}>
+                                <AsyncButton className="invite-btn-primary" onClick={handleSave}
+                                    loadingText={editing ? 'Saving…' : 'Sending…'}>
                                     {editing ? <>Save Changes</> : <><BsSendFill /> Send Invitation</>}
-                                </button>
+                                </AsyncButton>
                             </>
                         )}
                     </div>

@@ -7,12 +7,15 @@ import { Button, Form, Spinner, Accordion } from 'react-bootstrap';
 import { toPng } from 'html-to-image';
 import {
     BsDownload, BsArrowLeft, BsArrowsMove, BsTextLeft, BsDistributeVertical,
-    BsShieldLock, BsLayoutTextWindow, BsWhatsapp
+    BsShieldLock, BsLayoutTextWindow, BsWhatsapp, BsStars, BsScissors
 } from 'react-icons/bs';
-import { getSpeaker, saveSNSCard, getEvent, updateEventTemplate } from '../services/api';
+import { getSpeaker, saveSNSCard, saveAttendingCard, getEvent, updateEventTemplate } from '../services/api';
+import { usePhotoOps } from '../hooks/usePhotoOps';
 import Draggable from 'react-draggable';
 import { getImageUrl } from '../utils/imageUrl';
-import { shareSnsToWhatsApp } from '../utils/shareSns';
+// Share UI lives at /speakers/share/:id — after the card uploads we
+// navigate there with the freshly-generated URL in route state, so the
+// share page can render it without waiting for a re-fetch.
 
 const selectionStyles = `
     .ps-workspace { height: 100vh; background: #3c3c3c; display: flex; flex-direction: column; color: #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
@@ -95,21 +98,26 @@ const selectionStyles = `
     ::-webkit-scrollbar-thumb { background: #3d3d5c; border-radius: 10px; }
 `;
 
-export default function SNSGeneratorPage() {
+// cardType: 'speaker' (default, organizer-style announcement) or 'attending'
+// (first-person "I am attending" variant). The two modes share the entire
+// canvas/editor; what differs is the persistence column (sns_card_* vs
+// attending_card_*), the seed text on first load, and the post-save flow.
+export default function SNSGeneratorPage({ cardType = 'speaker' }) {
     return (
         <>
             <style>{selectionStyles}</style>
-            <SNSGeneratorInternal />
+            <SNSGeneratorInternal cardType={cardType} />
         </>
     );
 }
 
-function SNSGeneratorInternal() {
+function SNSGeneratorInternal({ cardType = 'speaker' }) {
     const { id } = useParams();
     const navigate = useNavigate();
     const { user } = useAuth();
     const isAdmin = user?.role === 'admin';
     const canManageEvent = isAdmin || user?.role === 'manager';
+    const isAttending = cardType === 'attending';
     
     const [speaker, setSpeaker] = useState(null);
     const [image, setImage] = useState(null);
@@ -223,7 +231,10 @@ function SNSGeneratorInternal() {
                 const s = r.data;
                 if (s) {
                     setSpeaker(s);
-                    if (s.sns_card_url) setSavedSnsUrl(s.sns_card_url);
+                    // For attending mode, pre-load any previously saved
+                    // attending card so its URL is available for share/preview.
+                    const savedUrl = isAttending ? s.attending_card_url : s.sns_card_url;
+                    if (savedUrl) setSavedSnsUrl(savedUrl);
                     // Fetch Event Branding
                     try {
                         const evtRes = await getEvent(s.event_id);
@@ -233,23 +244,34 @@ function SNSGeneratorInternal() {
                         const locked = !!evt.is_branding_locked && user?.role !== 'admin';
                         setIsLocked(locked);
 
+                        // Seed the three text slots. For attending mode the
+                        // card is the speaker saying "I am attending [Event]"
+                        // — so the prominent slot is the slogan, designation
+                        // shows the event title, and company shows who's
+                        // posting. The operator can edit any of it.
+                        const seedName        = isAttending ? 'I am attending' : (s.name || '');
+                        const seedDesignation = isAttending ? (evt.title || s.event_title || '') : (s.designation || 'Speaker');
+                        const seedCompany     = isAttending
+                            ? [s.name, s.designation].filter(Boolean).join(' · ')
+                            : (s.company || '');
+
                         setElements(prev => ({
                             ...prev,
                             name: {
                                 ...prev.name,
-                                text: s.name || '',
+                                text: seedName,
                                 color: locked && evt.primary_color ? readableColor(evt.primary_color) : prev.name.color,
                                 fontFamily: locked && evt.font_family ? evt.font_family : prev.name.fontFamily
                             },
                             designation: {
                                 ...prev.designation,
-                                text: s.designation || 'Speaker',
+                                text: seedDesignation,
                                 color: locked && evt.secondary_color ? readableColor(evt.secondary_color) : prev.designation.color,
                                 fontFamily: locked && evt.font_family ? evt.font_family : prev.designation.fontFamily
                             },
                             company: {
                                 ...prev.company,
-                                text: s.company || '',
+                                text: seedCompany,
                                 color: locked && evt.accent_color ? readableColor(evt.accent_color) : prev.company.color,
                                 fontFamily: locked && evt.font_family ? evt.font_family : prev.company.fontFamily
                             }
@@ -263,8 +285,10 @@ function SNSGeneratorInternal() {
                             }));
                         }
 
-                        // Restoration Logic: Speaker Layout > Event Template
-                        const speakerDesign = s.sns_card_design;
+                        // Restoration Logic: per-card design > event template.
+                        // Attending mode reads from its own column so it never
+                        // clobbers the speaker-announcement card's design.
+                        const speakerDesign = isAttending ? s.attending_card_design : s.sns_card_design;
                         const eventDesign = evt.sns_card_template;
                         const designToRestore = speakerDesign || eventDesign;
 
@@ -276,12 +300,19 @@ function SNSGeneratorInternal() {
                                         const next = { ...prev };
                                         Object.keys(design.elements).forEach(k => {
                                             if (next[k]) {
-                                                // PRESERVE actual speaker data for standard fields
+                                                // For speaker cards, the three standard slots
+                                                // (name/designation/company) hold *speaker data*
+                                                // that updates as the speaker row changes — so we
+                                                // keep the freshly-seeded text and overlay only the
+                                                // visual props from the saved design. For attending
+                                                // cards the slots hold operator-edited copy ("I am
+                                                // attending", etc.), so we restore the saved text.
                                                 const isStandardField = ['name', 'designation', 'company'].includes(k);
-                                                next[k] = { 
-                                                    ...next[k], 
+                                                const keepSeededText = isStandardField && !isAttending;
+                                                next[k] = {
+                                                    ...next[k],
                                                     ...design.elements[k],
-                                                    text: isStandardField ? next[k].text : design.elements[k].text 
+                                                    text: keepSeededText ? next[k].text : design.elements[k].text
                                                 };
                                             }
                                             else next[k] = design.elements[k]; // Custom elements
@@ -516,7 +547,8 @@ function SNSGeneratorInternal() {
             background: background && !background.startsWith('blob:') ? background : null,
             logoSettings
         };
-        const res = await saveSNSCard(id, formData, designMetadata);
+        const saveFn = isAttending ? saveAttendingCard : saveSNSCard;
+        const res = await saveFn(id, formData, designMetadata);
         const url = res?.data?.url || null;
         if (url) setSavedSnsUrl(url);
         return url;
@@ -526,11 +558,12 @@ function SNSGeneratorInternal() {
         setSaving(true);
         try {
             const url = await renderAndUploadCard();
-            if (url) alert('SNS Card saved successfully!');
-            else alert('Failed to save SNS card.');
+            const label = isAttending ? 'I-am-attending card' : 'SNS Card';
+            if (url) alert(`${label} saved successfully!`);
+            else alert(`Failed to save ${label}.`);
         } catch (err) {
             console.error('Save failed', err);
-            alert('Failed to save SNS card.');
+            alert(isAttending ? 'Failed to save I-am-attending card.' : 'Failed to save SNS card.');
         } finally {
             setSaving(false);
         }
@@ -549,7 +582,9 @@ function SNSGeneratorInternal() {
                 alert('Could not save the card. Please try again before sharing.');
                 return;
             }
-            await shareSnsToWhatsApp({ snsUrl: url, speaker, eventTitle: event?.title || '' });
+            navigate(`/speakers/share/${speaker.id}`, {
+                state: { snsUrl: url, eventTitle: event?.title || '' },
+            });
         } catch (err) {
             console.error('Share prep failed', err);
             alert('Failed to prepare card for sharing.');
@@ -575,6 +610,20 @@ function SNSGeneratorInternal() {
             setCroppedImage(null);
         }
     };
+
+    // Photo ops (Enhance / Remove BG). Source priority: cropped > raw
+    // upload > saved photo_url. The processed bytes replace `image` so
+    // the cropper re-renders on them; user clicks Update Crop after.
+    const { photoOp, error: photoOpError, runEnhance: handleEnhancePhoto, runRemoveBg: handleRemoveBackground } = usePhotoOps({
+        getSource: () => croppedImage || image || (speaker?.photo_url ? getImageUrl(speaker.photo_url) : null),
+        onResult: (blob) => {
+            setImage(URL.createObjectURL(blob));
+            setCroppedImage(null);
+        },
+    });
+    // Surface op errors via alert — keeps existing UX; the hook only owns
+    // the state so we don't have to thread a toast/error UI through here.
+    useEffect(() => { if (photoOpError) alert(photoOpError); }, [photoOpError]);
 
     const updateElement = (key, field, value) => {
         setElements(prev => ({
@@ -794,7 +843,9 @@ function SNSGeneratorInternal() {
                 <Button variant="link" className="p-0 text-decoration-none me-3" style={{ color: 'var(--text-primary)' }} onClick={() => navigate('/speakers')} title="Back to Speakers" aria-label="Back to Speakers">
                     <BsArrowLeft size={20} />
                 </Button>
-                <h4 className="m-0" style={{ color: 'var(--text-primary)' }}>SNS Card Generator</h4>
+                <h4 className="m-0" style={{ color: 'var(--text-primary)' }}>
+                    {isAttending ? 'I am attending — Card Generator' : 'SNS Card Generator'}
+                </h4>
             </div>
 
             <div className="row g-4" style={{ height: 'calc(100vh - 100px)' }}>
@@ -832,6 +883,36 @@ function SNSGeneratorInternal() {
                                                         />
                                                     </div>
                                                     <Button size="sm" className="mt-2 w-100 btn-secondary-glass" onClick={handleCrop}>Update Crop</Button>
+                                                    {/* Cutout.pro photo ops — sit directly under the cropper so
+                                                        they're discoverable while framing. Source priority:
+                                                        cropped > raw upload > saved photo. Result replaces
+                                                        `image` so the cropper re-renders on it. */}
+                                                    <div className="d-flex gap-2 mt-2">
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline-light"
+                                                            className="flex-grow-1 d-flex align-items-center justify-content-center gap-1"
+                                                            onClick={handleEnhancePhoto}
+                                                            disabled={!!photoOp || (!image && !croppedImage && !speaker?.photo_url)}
+                                                            title="Auto-enhance the current photo (sharpen + upscale). Re-crop after."
+                                                            style={{ borderColor: 'rgba(139,92,246,0.55)', color: '#a78bfa', fontSize: '0.75rem' }}
+                                                        >
+                                                            {photoOp === 'enhance' ? <Spinner size="sm" /> : <BsStars />}
+                                                            {photoOp === 'enhance' ? 'Enhancing…' : 'Enhance'}
+                                                        </Button>
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline-light"
+                                                            className="flex-grow-1 d-flex align-items-center justify-content-center gap-1"
+                                                            onClick={handleRemoveBackground}
+                                                            disabled={!!photoOp || (!image && !croppedImage && !speaker?.photo_url)}
+                                                            title="Remove background. Returns a transparent PNG; re-crop after."
+                                                            style={{ borderColor: 'rgba(19,217,153,0.55)', color: '#13d999', fontSize: '0.75rem' }}
+                                                        >
+                                                            {photoOp === 'remove-bg' ? <Spinner size="sm" /> : <BsScissors />}
+                                                            {photoOp === 'remove-bg' ? 'Removing…' : 'Remove BG'}
+                                                        </Button>
+                                                    </div>
                                                 </div>
 
                                                 <div className="mb-3 text-start">
@@ -1094,15 +1175,20 @@ function SNSGeneratorInternal() {
                                     <BsDownload className="me-2" /> Download
                                 </Button>
                             </div>
-                            <Button
-                                className="w-100 d-flex align-items-center justify-content-center gap-2"
-                                onClick={handleShare}
-                                disabled={saving}
-                                title={speaker?.mobile_no ? `Send card on WhatsApp to ${speaker.name}` : 'Share card on WhatsApp'}
-                                style={{ background: '#25D366', border: 'none', color: '#fff', fontWeight: 700 }}
-                            >
-                                {saving ? <Spinner size="sm" /> : <BsWhatsapp />} Share on WhatsApp
-                            </Button>
+                            {/* WhatsApp share is hidden for attending cards —
+                                they're meant for the speaker to post on their
+                                own feed, not for us to send out. */}
+                            {!isAttending && (
+                                <Button
+                                    className="w-100 d-flex align-items-center justify-content-center gap-2"
+                                    onClick={handleShare}
+                                    disabled={saving}
+                                    title={speaker?.mobile_no ? `Send card on WhatsApp to ${speaker.name}` : 'Share card on WhatsApp'}
+                                    style={{ background: '#25D366', border: 'none', color: '#fff', fontWeight: 700 }}
+                                >
+                                    {saving ? <Spinner size="sm" /> : <BsWhatsapp />} Share on WhatsApp
+                                </Button>
+                            )}
                             {canManageEvent && (
                                 <div className="d-flex gap-2 w-100">
                                     <Button variant="outline-accent" size="sm" className="flex-grow-1" onClick={handleSaveAsEventTemplate}>

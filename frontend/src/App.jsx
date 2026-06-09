@@ -15,11 +15,13 @@ import AgendasPage from './pages/AgendasPage';
 import UsersPage from './pages/UsersPage';
 import SpeakerFormPage from './pages/SpeakerFormPage';
 import SNSGeneratorPage from './pages/SNSGeneratorPage';
+import SnsSharePage from './pages/SnsSharePage';
 import EventSNSTemplatePage from './pages/EventSNSTemplatePage';
 import AttendeesPage from './pages/AttendeesPage';
 import SpeakerTravelPage from './pages/SpeakerTravelPage';
 import AcceptInvitePage from './pages/AcceptInvitePage';
 import AdminSettingsPage from './pages/AdminSettingsPage';
+import SocialAccountsPage from './pages/SocialAccountsPage';
 import PaymentSettingsPage from './pages/PaymentSettingsPage';
 import MediaLibraryPage from './pages/MediaLibraryPage';
 import EventDetailPage from './pages/EventDetailPage';
@@ -36,10 +38,13 @@ import PartnerShowcasePage from './pages/PartnerShowcasePage';
 import PaymentRetryPage from './pages/PaymentRetryPage';
 import BulkCertificatePage from './pages/BulkCertificatePage';
 import AttendeeEmailTemplatePage from './pages/AttendeeEmailTemplatePage';
+import CertificateEmailTemplatePage from './pages/CertificateEmailTemplatePage';
+import CertificateSendHistoryPage from './pages/CertificateSendHistoryPage';
 import RecycleBinPage from './pages/RecycleBinPage';
 import {
     PlatformDashboardPage, PlatformOrganizationsPage,
-    PlatformInvoicesPage, PlatformPlansPage, PlatformAnnouncementsPage
+    PlatformInvoicesPage, PlatformPlansPage, PlatformAnnouncementsPage,
+    PlatformProfilePage,
 } from './pages/PlatformConsolePage';
 import 'bootstrap/dist/css/bootstrap.min.css';
 
@@ -90,7 +95,8 @@ function AppRoutes() {
                 <Route path="/" element={<Navigate to={user?.is_super_admin ? '/platform' : '/dashboard'} replace />} />
                 <Route path="/dashboard" element={user?.is_super_admin ? <Navigate to="/platform" replace /> : <DashboardPage />} />
                 <Route path="/events" element={<EventsPage />} />
-                <Route path="/events/sns-template/:id" element={<ProtectedRoute roles={['admin', 'manager']}><EventSNSTemplatePage /></ProtectedRoute>} />
+                <Route path="/events/sns-template/:id" element={<ProtectedRoute roles={['admin', 'manager']}><EventSNSTemplatePage cardType="speaker" /></ProtectedRoute>} />
+                <Route path="/events/attending-template/:id" element={<ProtectedRoute roles={['admin', 'manager']}><EventSNSTemplatePage cardType="attending" /></ProtectedRoute>} />
                 <Route path="/events/:id/web" element={<ProtectedRoute roles={['admin', 'manager']}><EventDetailPage /></ProtectedRoute>} />
                 <Route path="/events/:id/qr" element={<ProtectedRoute roles={['admin', 'manager']}><EventQRPage /></ProtectedRoute>} />
                 <Route path="/events/:id/checkin" element={<ProtectedRoute requireSection="attendees"><CheckInScannerPage /></ProtectedRoute>} />
@@ -98,7 +104,9 @@ function AppRoutes() {
                 <Route path="/speakers/add" element={<ProtectedRoute requireSection="speakers"><SpeakerFormPage /></ProtectedRoute>} />
                 <Route path="/speakers/edit/:id" element={<ProtectedRoute requireSection="speakers"><SpeakerFormPage /></ProtectedRoute>} />
                 <Route path="/speakers/view/:id" element={<ProtectedRoute requireSection="speakers"><SpeakerViewPage /></ProtectedRoute>} />
-                <Route path="/speakers/sns/:id" element={<ProtectedRoute requireSection="speakers"><SNSGeneratorPage /></ProtectedRoute>} />
+                <Route path="/speakers/sns/:id" element={<ProtectedRoute requireSection="speakers"><SNSGeneratorPage cardType="speaker" /></ProtectedRoute>} />
+                <Route path="/speakers/attending/:id" element={<ProtectedRoute requireSection="speakers"><SNSGeneratorPage cardType="attending" /></ProtectedRoute>} />
+                <Route path="/speakers/share/:id" element={<ProtectedRoute requireSection="speakers"><SnsSharePage /></ProtectedRoute>} />
                 <Route path="/partners" element={<ProtectedRoute requireSection="partners"><PartnersPage /></ProtectedRoute>} />
                 <Route path="/partners/view/:id" element={<ProtectedRoute requireSection="partners"><PartnerViewPage /></ProtectedRoute>} />
                 <Route path="/partner-categories" element={<ProtectedRoute requireSection="partners"><PartnerCategoriesPage /></ProtectedRoute>} />
@@ -116,8 +124,11 @@ function AppRoutes() {
                 <Route path="/settings" element={<ProtectedRoute roles={['admin']}><AdminSettingsPage /></ProtectedRoute>} />
                 <Route path="/payment-settings" element={<ProtectedRoute roles={['admin']}><PaymentSettingsPage /></ProtectedRoute>} />
                 <Route path="/organization" element={<ProtectedRoute roles={['admin', 'manager']}><TenantSettingsPage /></ProtectedRoute>} />
+                <Route path="/social-accounts" element={<ProtectedRoute roles={['admin', 'manager']}><SocialAccountsPage /></ProtectedRoute>} />
                 <Route path="/billing" element={<ProtectedRoute roles={['admin', 'manager']}><BillingPage /></ProtectedRoute>} />
                 <Route path="/tools/bulk-certificate" element={<ProtectedRoute roles={['admin', 'manager']} requireFeature="bulk_certificate_enabled"><BulkCertificatePage /></ProtectedRoute>} />
+                <Route path="/events/:eventId/certificate-email-template" element={<ProtectedRoute roles={['admin', 'manager']} requireFeature="bulk_certificate_enabled"><CertificateEmailTemplatePage /></ProtectedRoute>} />
+                <Route path="/events/:eventId/certificate-send-history" element={<ProtectedRoute roles={['admin', 'manager']} requireFeature="bulk_certificate_enabled"><CertificateSendHistoryPage /></ProtectedRoute>} />
                 <Route path="/recycle-bin" element={<ProtectedRoute roles={['admin', 'manager']}><RecycleBinPage /></ProtectedRoute>} />
                 <Route path="/platform" element={<Navigate to="/platform/dashboard" replace />} />
                 <Route path="/platform/dashboard" element={<ProtectedRoute superAdminOnly><PlatformDashboardPage /></ProtectedRoute>} />
@@ -125,6 +136,7 @@ function AppRoutes() {
                 <Route path="/platform/invoices" element={<ProtectedRoute superAdminOnly><PlatformInvoicesPage /></ProtectedRoute>} />
                 <Route path="/platform/plans" element={<ProtectedRoute superAdminOnly><PlatformPlansPage /></ProtectedRoute>} />
                 <Route path="/platform/announcements" element={<ProtectedRoute superAdminOnly><PlatformAnnouncementsPage /></ProtectedRoute>} />
+                <Route path="/platform/profile" element={<ProtectedRoute superAdminOnly><PlatformProfilePage /></ProtectedRoute>} />
             </Route>
 
             <Route path="*" element={<Navigate to={user?.is_super_admin ? '/platform' : '/dashboard'} />} />

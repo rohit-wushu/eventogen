@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { protect } = require('../middleware/authMiddleware');
 const { assignedIdsForSql } = require('../utils/eventAccess');
+const { releaseTenantFiles } = require('../services/storageMeter');
 
 // Recycle Bin — soft-deleted speakers/partners/awards/agendas/attendees stay
 // here for 30 days and can be restored or permanently purged. Admins +
@@ -14,6 +15,29 @@ const { assignedIdsForSql } = require('../utils/eventAccess');
 // the original DELETE that the soft-delete replaced.
 
 const RETENTION_DAYS = 30;
+
+// Per-entity image columns to credit back when a row is permanently purged.
+// Adding a new image column to any of these tables = add it here.
+const IMAGE_COLUMNS = {
+    speakers:  ['photo_url', 'sns_card_url', 'attending_card_url'],
+    partners:  ['logo_url'],
+    awards:    ['photo_url', 'company_logo_url'],
+    agendas:   [],
+    attendees: []
+};
+
+// Before deleting rows, snapshot their (tenant_id, image_columns) so we can
+// release the bytes back to the tenant after the DELETE succeeds.
+async function harvestAndRelease(entity, whereSql, whereParams) {
+    const cols = IMAGE_COLUMNS[entity];
+    if (!cols || cols.length === 0) return;
+    const select = `tenant_id, ${cols.join(', ')}`;
+    const [rows] = await db.query(`SELECT ${select} FROM ${entity} WHERE ${whereSql}`, whereParams);
+    for (const r of rows) {
+        const urls = cols.map(c => r[c]).filter(Boolean);
+        if (urls.length) await releaseTenantFiles(r.tenant_id, ...urls);
+    }
+}
 
 // `type` from the URL is the table name, but we don't accept arbitrary input —
 // only the five whitelisted entities have soft-delete columns and a sensible
@@ -62,12 +86,9 @@ router.use(protect, requireAdminOrManager);
 // index makes the scan trivial.
 const purgeExpired = async (tenantId) => {
     for (const t of Object.keys(ENTITIES)) {
-        await db.query(
-            `DELETE FROM ${t}
-             WHERE tenant_id = ? AND deleted_at IS NOT NULL
-               AND deleted_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
-            [tenantId, RETENTION_DAYS]
-        );
+        const where = `tenant_id = ? AND deleted_at IS NOT NULL AND deleted_at < DATE_SUB(NOW(), INTERVAL ? DAY)`;
+        await harvestAndRelease(t, where, [tenantId, RETENTION_DAYS]);
+        await db.query(`DELETE FROM ${t} WHERE ${where}`, [tenantId, RETENTION_DAYS]);
     }
 };
 
@@ -77,12 +98,9 @@ const purgeExpired = async (tenantId) => {
 const purgeExpiredGlobal = async () => {
     let total = 0;
     for (const t of Object.keys(ENTITIES)) {
-        const [r] = await db.query(
-            `DELETE FROM ${t}
-             WHERE deleted_at IS NOT NULL
-               AND deleted_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
-            [RETENTION_DAYS]
-        );
+        const where = `deleted_at IS NOT NULL AND deleted_at < DATE_SUB(NOW(), INTERVAL ? DAY)`;
+        await harvestAndRelease(t, where, [RETENTION_DAYS]);
+        const [r] = await db.query(`DELETE FROM ${t} WHERE ${where}`, [RETENTION_DAYS]);
         total += r.affectedRows || 0;
     }
     if (total > 0) console.log(`[recycle-bin] purged ${total} expired item(s)`);
@@ -202,11 +220,10 @@ router.delete('/:type/:id', async (req, res) => {
     if (!ENTITIES[type]) return res.status(400).json({ error: 'invalid entity type' });
     try {
         const { where, params } = scopeForRole(req);
-        const [r] = await db.query(
-            `DELETE FROM ${type}
-             WHERE id = ? AND tenant_id = ? AND deleted_at IS NOT NULL${where}`,
-            [id, req.tenantId, ...params]
-        );
+        const whereSql = `id = ? AND tenant_id = ? AND deleted_at IS NOT NULL${where}`;
+        const whereParams = [id, req.tenantId, ...params];
+        await harvestAndRelease(type, whereSql, whereParams);
+        const [r] = await db.query(`DELETE FROM ${type} WHERE ${whereSql}`, whereParams);
         if (r.affectedRows === 0) return res.status(404).json({ error: 'Item not found in recycle bin' });
         res.json({ ok: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -220,10 +237,10 @@ router.post('/empty', async (req, res) => {
         let total = 0;
         for (const t of Object.keys(ENTITIES)) {
             const { where, params } = scopeForRole(req);
-            const [r] = await db.query(
-                `DELETE FROM ${t} WHERE tenant_id = ? AND deleted_at IS NOT NULL${where}`,
-                [req.tenantId, ...params]
-            );
+            const whereSql = `tenant_id = ? AND deleted_at IS NOT NULL${where}`;
+            const whereParams = [req.tenantId, ...params];
+            await harvestAndRelease(t, whereSql, whereParams);
+            const [r] = await db.query(`DELETE FROM ${t} WHERE ${whereSql}`, whereParams);
             total += r.affectedRows || 0;
         }
         res.json({ ok: true, purged: total });

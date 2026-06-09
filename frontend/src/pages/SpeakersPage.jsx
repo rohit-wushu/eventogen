@@ -2,14 +2,49 @@ import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Table, Button, Form, Modal, Spinner, ProgressBar } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
-import { BsPlus, BsPencil, BsTrash, BsPersonBadge, BsShare, BsUpload, BsDownload, BsFunnel, BsGrid3X3Gap, BsList, BsLayoutTextWindow, BsLightningChargeFill, BsCheckCircleFill, BsXCircleFill, BsFileEarmarkSpreadsheet, BsCodeSlash, BsGripVertical, BsWhatsapp, BsEye, BsEyeSlash, BsSearch, BsX } from 'react-icons/bs';
+import { BsPlus, BsPencil, BsTrash, BsPersonBadge, BsShare, BsUpload, BsDownload, BsFunnel, BsGrid3X3Gap, BsList, BsLayoutTextWindow, BsLightningChargeFill, BsCheckCircleFill, BsXCircleFill, BsFileEarmarkSpreadsheet, BsCodeSlash, BsGripVertical, BsEye, BsEyeSlash, BsSearch, BsX, BsCalendarCheck } from 'react-icons/bs';
 import { useNavigate } from 'react-router-dom';
-import { getSpeakers, deleteSpeaker, getEvents, getEvent, saveSNSCard, deleteSNSCard, importSpeakers, importSpeakersFromGSheet, reorderSpeakers, setSpeakerVisibility } from '../services/api';
+import { getSpeakers, deleteSpeaker, getEvents, getEvent, saveSNSCard, saveAttendingCard, deleteSNSCard, deleteAttendingCard, importSpeakers, importSpeakersFromGSheet, reorderSpeakers, setSpeakerVisibility } from '../services/api';
 import { getImageUrl } from '../utils/imageUrl';
 import { toPng } from 'html-to-image';
 import JSZip from 'jszip';
 import ApiEndpointsModal from '../components/ApiEndpointsModal';
-import { shareSnsToWhatsApp } from '../utils/shareSns';
+import QuotaButton from '../components/QuotaButton';
+import { invalidateQuota } from '../hooks/useQuota';
+// Share UI lives on its own page (/speakers/share/:id) — the buttons below
+// just navigate there. Kept the import line for the small chance another
+// piece of this file uses it; the share-page route is in App.jsx.
+
+// Gallery action-bar config keyed by viewMode. Adding a third card type
+// (e.g. partners) means appending one entry here, not duplicating JSX.
+// `cardType` is the value passed to bulk-modal / handleDownloadAll, so
+// callers stay agnostic to the panel's identity.
+const CARD_PANELS = {
+    gallery: {
+        cardType: 'speaker',
+        title: 'SNS Card Actions',
+        hint: 'Design a master template then generate cards for all speakers at once',
+        templateRoute: (eventId) => `/events/sns-template/${eventId}`,
+        icon: BsLayoutTextWindow,
+        tint: '#13d999',
+        bg: 'rgba(19,217,153,0.05)',
+        border: 'rgba(19,217,153,0.15)',
+        masterBtn: { variant: 'outline-accent', style: {} },
+        generateBtn: { className: 'btn-accent', style: {} },
+    },
+    attending: {
+        cardType: 'attending',
+        title: 'Attending Card Actions',
+        hint: 'Design an "I am attending" master template then generate cards for all speakers at once',
+        templateRoute: (eventId) => `/events/attending-template/${eventId}`,
+        icon: BsCalendarCheck,
+        tint: '#a78bfa',
+        bg: 'rgba(139,92,246,0.06)',
+        border: 'rgba(139,92,246,0.20)',
+        masterBtn: { variant: 'outline-light', style: { borderColor: 'rgba(139,92,246,0.45)' } },
+        generateBtn: { className: undefined, style: { background: '#8b5cf6', borderColor: '#8b5cf6', color: '#fff' } },
+    },
+};
 
 export default function SpeakersPage() {
     const { user } = useAuth();
@@ -27,7 +62,11 @@ export default function SpeakersPage() {
     const [viewMode, setViewMode] = useState('table');
     const [gallerySearch, setGallerySearch] = useState('');
     const [previewCard, setPreviewCard] = useState(null); // { url, speaker }
-    const [showBulkModal, setShowBulkModal] = useState(false);
+    // Bulk generator opens for the card type the operator clicked: 'speaker'
+    // for the SNS panel, 'attending' for the I-am-attending panel. null hides.
+    const [bulkCardType, setBulkCardType] = useState(null);
+    const showBulkModal = !!bulkCardType;
+    const setShowBulkModal = (open) => setBulkCardType(open ? 'speaker' : null);
     const [showGSheetModal, setShowGSheetModal] = useState(false);
     const [gSheetUrl, setGSheetUrl] = useState('');
     const [gSheetEventId, setGSheetEventId] = useState('');
@@ -35,29 +74,33 @@ export default function SpeakersPage() {
     const [gSheetError, setGSheetError] = useState('');
     const [apiEvent, setApiEvent] = useState(null); // { id, title } when the JSON-endpoints modal is open
 
-    // One-click WhatsApp share: hands the actual image file to the OS share
-    // sheet on mobile, or falls back to wa.me with the absolute URL on
-    // desktop where Web Share API can't attach files.
-    const handleWhatsAppShare = (s) => {
+    // SNS Share → dedicated share page (/speakers/share/:id) with WhatsApp,
+    // LinkedIn, X, Facebook, Telegram, Email, Download, Copy image, Copy link.
+    // If no card has been generated yet, route the operator to the generator.
+    const handleWhatsAppShare = (_e, s) => {
         if (!s?.sns_card_url) {
             navigate(`/speakers/sns/${s.id}`);
             return;
         }
-        shareSnsToWhatsApp({ snsUrl: s.sns_card_url, speaker: s, eventTitle: s.event_title || '' });
+        navigate(`/speakers/share/${s.id}`, { state: { snsUrl: s.sns_card_url, eventTitle: s.event_title || '' } });
     };
 
     const canManage = ['admin', 'manager'].includes(user?.role) || (user?.role === 'employee' && !!user?.assigned_event_id);
     const [downloadingAll, setDownloadingAll] = useState(false);
 
-    const handleDownloadCard = async (speaker) => {
-        const url = getImageUrl(speaker.sns_card_url);
+    const handleDownloadCard = async (speaker, cardType = 'speaker') => {
+        const isAttending = cardType === 'attending';
+        const sourceUrl = isAttending ? speaker.attending_card_url : speaker.sns_card_url;
+        if (!sourceUrl) return;
+        const url = getImageUrl(sourceUrl);
         try {
             const res = await fetch(url);
             const blob = await res.blob();
             const blobUrl = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = blobUrl;
-            a.download = `sns-${speaker.name.replace(/\s+/g, '-').toLowerCase()}.png`;
+            const prefix = isAttending ? 'attending' : 'sns';
+            a.download = `${prefix}-${speaker.name.replace(/\s+/g, '-').toLowerCase()}.png`;
             document.body.appendChild(a);
             a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
@@ -66,24 +109,33 @@ export default function SpeakersPage() {
         }
     };
 
-    const handleDownloadAll = async () => {
-        const withCards = speakers.filter(s => s.sns_card_url);
-        if (!withCards.length) { alert('No SNS cards generated yet.'); return; }
+    // Zip all generated cards of the given type ('speaker' → sns_card_url,
+    // 'attending' → attending_card_url). The two flows are otherwise identical
+    // — just different columns + zip filename.
+    const handleDownloadAll = async (cardType = 'speaker') => {
+        const isAttending = cardType === 'attending';
+        const urlField  = isAttending ? 'attending_card_url' : 'sns_card_url';
+        const filePrefix = isAttending ? 'attending' : 'sns';
+        const zipName    = isAttending ? 'attending-cards.zip' : 'sns-cards.zip';
+        const emptyMsg   = isAttending ? 'No I-am-attending cards generated yet.' : 'No SNS cards generated yet.';
+
+        const withCards = speakers.filter(s => s[urlField]);
+        if (!withCards.length) { alert(emptyMsg); return; }
         setDownloadingAll(true);
         try {
             const zip = new JSZip();
             await Promise.all(withCards.map(async (s) => {
                 try {
-                    const res = await fetch(getImageUrl(s.sns_card_url));
+                    const res = await fetch(getImageUrl(s[urlField]));
                     const blob = await res.blob();
-                    zip.file(`sns-${s.name.replace(/\s+/g, '-').toLowerCase()}.png`, blob);
+                    zip.file(`${filePrefix}-${s.name.replace(/\s+/g, '-').toLowerCase()}.png`, blob);
                 } catch (e) { console.warn(`Skip ${s.name}`, e); }
             }));
             const content = await zip.generateAsync({ type: 'blob' });
             const blobUrl = URL.createObjectURL(content);
             const a = document.createElement('a');
             a.href = blobUrl;
-            a.download = 'sns-cards.zip';
+            a.download = zipName;
             document.body.appendChild(a);
             a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
@@ -177,6 +229,7 @@ export default function SpeakersPage() {
         if (window.confirm('Delete this speaker permanently? This will remove the speaker and all related data (SNS card, travel, agenda assignments). This cannot be undone.')) {
             await deleteSpeaker(id);
             load();
+            invalidateQuota();
         }
     };
 
@@ -195,15 +248,19 @@ export default function SpeakersPage() {
         }
     };
 
-    const handleDeleteCard = async (speaker) => {
-        if (!speaker?.sns_card_url) return;
-        if (!window.confirm(`Delete the SNS card for ${speaker.name}? The speaker will remain; only the generated card will be removed.`)) return;
+    const handleDeleteCard = async (speaker, cardType = 'speaker') => {
+        const isAttending = cardType === 'attending';
+        const urlField = isAttending ? 'attending_card_url' : 'sns_card_url';
+        const cardLabel = isAttending ? 'I-am-attending card' : 'SNS card';
+        if (!speaker?.[urlField]) return;
+        if (!window.confirm(`Delete the ${cardLabel} for ${speaker.name}? The speaker will remain; only the generated card will be removed.`)) return;
         try {
-            await deleteSNSCard(speaker.id);
+            const deleteFn = isAttending ? deleteAttendingCard : deleteSNSCard;
+            await deleteFn(speaker.id);
             setPreviewCard(null);
             load();
         } catch (err) {
-            alert(err.response?.data?.error || 'Failed to delete SNS card');
+            alert(err.response?.data?.error || `Failed to delete ${cardLabel}`);
         }
     };
 
@@ -380,9 +437,13 @@ export default function SpeakersPage() {
                         >
                             <BsFileEarmarkSpreadsheet /> Import from Google Sheet
                         </Button>
-                        <Button className="btn-accent d-flex align-items-center gap-2" onClick={() => navigate('/speakers/add')}>
+                        <QuotaButton
+                            resource="speakers"
+                            className="btn-accent d-flex align-items-center gap-2"
+                            onClick={() => navigate('/speakers/add')}
+                        >
                             <BsPlus size={18} /> Add Speaker
-                        </Button>
+                        </QuotaButton>
                     </div>
                 )}
             </div>
@@ -432,6 +493,9 @@ export default function SpeakersPage() {
                     <Button size="sm" variant={viewMode === 'gallery' ? 'accent' : 'outline-secondary'} style={{ borderRadius: 8, padding: '4px 10px' }} onClick={() => setViewMode('gallery')} title="SNS Gallery">
                         <BsGrid3X3Gap size={16} />
                     </Button>
+                    <Button size="sm" variant={viewMode === 'attending' ? 'accent' : 'outline-secondary'} style={{ borderRadius: 8, padding: '4px 10px' }} onClick={() => setViewMode('attending')} title='"I am attending" Gallery'>
+                        <BsCalendarCheck size={16} />
+                    </Button>
                 </div>
             </div>
 
@@ -472,7 +536,7 @@ export default function SpeakersPage() {
                     <p style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text-primary)' }}>No Speakers Yet</p>
                     <p style={{ fontSize: '0.8rem' }}>Add speakers to your events.</p>
                 </div>
-            ) : viewMode === 'gallery' ? (
+            ) : viewMode === 'gallery' || viewMode === 'attending' ? (
             <>
                 {/* Gallery search — filters cards by name, company, designation or role */}
                 <div style={{ position: 'relative', marginBottom: 16, maxWidth: 380 }}>
@@ -499,31 +563,36 @@ export default function SpeakersPage() {
                     )}
                 </div>
 
-                {/* Gallery Action Bar — shown only when an event is selected */}
-                {filterEvent && canManage && (
-                    <div className="sns-action-bar" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, padding: '14px 18px', background: 'rgba(19,217,153,0.05)', border: '1px solid rgba(19,217,153,0.15)', borderRadius: 12 }}>
-                        <BsLayoutTextWindow size={16} style={{ color: '#13d999', flexShrink: 0 }} />
-                        <div className="sns-action-text" style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#fff' }}>SNS Card Actions</div>
-                            <div style={{ fontSize: '0.72rem', color: '#666' }}>Design a master template then generate cards for all speakers at once</div>
+                {/* Gallery action bar — one render driven by CARD_PANELS so a
+                    third gallery (or different theming) is a config edit. */}
+                {filterEvent && canManage && CARD_PANELS[viewMode] && (() => {
+                    const cfg = CARD_PANELS[viewMode];
+                    const Icon = cfg.icon;
+                    return (
+                        <div className="sns-action-bar" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, padding: '14px 18px', background: cfg.bg, border: `1px solid ${cfg.border}`, borderRadius: 12 }}>
+                            <Icon size={16} style={{ color: cfg.tint, flexShrink: 0 }} />
+                            <div className="sns-action-text" style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#fff' }}>{cfg.title}</div>
+                                <div style={{ fontSize: '0.72rem', color: '#666' }}>{cfg.hint}</div>
+                            </div>
+                            <div className="sns-action-buttons" style={{ display: 'contents' }}>
+                                <Button size="sm" variant={cfg.masterBtn.variant} style={{ borderRadius: 8, whiteSpace: 'nowrap', fontSize: '0.78rem', color: '#fff', ...cfg.masterBtn.style }}
+                                    onClick={() => navigate(cfg.templateRoute(filterEvent))}>
+                                    <BsLayoutTextWindow className="me-1" /> Master Template
+                                </Button>
+                                <Button size="sm" className={cfg.generateBtn.className} style={{ borderRadius: 8, whiteSpace: 'nowrap', fontSize: '0.78rem', ...cfg.generateBtn.style }}
+                                    onClick={() => setBulkCardType(cfg.cardType)}>
+                                    <BsLightningChargeFill className="me-1" /> Generate All Cards
+                                </Button>
+                                <Button size="sm" variant="outline-light" style={{ borderRadius: 8, whiteSpace: 'nowrap', fontSize: '0.78rem', borderColor: 'rgba(255,255,255,0.15)' }}
+                                    onClick={() => handleDownloadAll(cfg.cardType)} disabled={downloadingAll}>
+                                    {downloadingAll ? <Spinner size="sm" animation="border" className="me-1" /> : <BsDownload className="me-1" />}
+                                    {downloadingAll ? 'Zipping...' : 'Download All'}
+                                </Button>
+                            </div>
                         </div>
-                        <div className="sns-action-buttons" style={{ display: 'contents' }}>
-                            <Button size="sm" variant="outline-accent" style={{ borderRadius: 8, whiteSpace: 'nowrap', fontSize: '0.78rem', color: '#fff', }}
-                                onClick={() => navigate(`/events/sns-template/${filterEvent}`)}>
-                                <BsLayoutTextWindow className="me-1" /> Master Template
-                            </Button>
-                            <Button size="sm" className="btn-accent" style={{ borderRadius: 8, whiteSpace: 'nowrap', fontSize: '0.78rem' }}
-                                onClick={() => setShowBulkModal(true)}>
-                                <BsLightningChargeFill className="me-1" /> Generate All Cards
-                            </Button>
-                            <Button size="sm" variant="outline-light" style={{ borderRadius: 8, whiteSpace: 'nowrap', fontSize: '0.78rem', borderColor: 'rgba(255,255,255,0.15)' }}
-                                onClick={handleDownloadAll} disabled={downloadingAll}>
-                                {downloadingAll ? <Spinner size="sm" animation="border" className="me-1" /> : <BsDownload className="me-1" />}
-                                {downloadingAll ? 'Zipping...' : 'Download All'}
-                            </Button>
-                        </div>
-                    </div>
-                )}
+                    );
+                })()}
                 {gallerySearch.trim() && gallerySpeakers.length === 0 ? (
                     <div className="empty-state" style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)' }}>
                         <div className="empty-state-icon"><BsSearch /></div>
@@ -532,43 +601,49 @@ export default function SpeakersPage() {
                     </div>
                 ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 20 }}>
-                    {gallerySpeakers.map(s => (
+                    {gallerySpeakers.map(s => {
+                        // Branch the card preview on view mode so the same JSX
+                        // serves both gallery types. Attending view reads the
+                        // attending_card_url column and links to the I-am-
+                        // attending generator route.
+                        const isAttendingView = viewMode === 'attending';
+                        const cardUrl   = isAttendingView ? s.attending_card_url : s.sns_card_url;
+                        const editRoute = isAttendingView ? `/speakers/attending/${s.id}` : `/speakers/sns/${s.id}`;
+                        const altLabel  = isAttendingView ? '"I am attending" Card' : 'SNS Card';
+                        return (
                         <div key={s.id} style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 14, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                            {/* SNS Card Preview */}
+                            {/* Card Preview (SNS or Attending depending on view) */}
                             <div
-                                style={{ position: 'relative', aspectRatio: '1', background: '#0d0d1a', cursor: s.sns_card_url ? 'zoom-in' : 'pointer', overflow: 'hidden' }}
-                                onClick={() => s.sns_card_url ? setPreviewCard({ url: getImageUrl(s.sns_card_url), speaker: s }) : navigate(`/speakers/sns/${s.id}`)}
+                                style={{ position: 'relative', aspectRatio: '1', background: '#0d0d1a', cursor: cardUrl ? 'zoom-in' : 'pointer', overflow: 'hidden' }}
+                                onClick={() => cardUrl ? setPreviewCard({ url: getImageUrl(cardUrl), speaker: s }) : navigate(editRoute)}
                             >
-                                {s.sns_card_url ? (
+                                {cardUrl ? (
                                     <img
-                                        src={getImageUrl(s.sns_card_url)}
-                                        alt="SNS Card"
+                                        src={getImageUrl(cardUrl)}
+                                        alt={altLabel}
                                         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                                     />
                                 ) : (
                                     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' }}>
-                                        <BsShare size={28} style={{ opacity: 0.3 }} />
+                                        {isAttendingView ? <BsCalendarCheck size={28} style={{ opacity: 0.3 }} /> : <BsShare size={28} style={{ opacity: 0.3 }} />}
                                         <span style={{ fontSize: '0.7rem', opacity: 0.5 }}>No card yet — click to create</span>
                                     </div>
                                 )}
-                                {/* Hover overlay — Edit + Download + Delete Card buttons */}
-                                {s.sns_card_url && (
-                                    <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', opacity: 0, transition: 'opacity 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, flexDirection: 'column' }}
+                                {/* Hover overlay — Edit + Download + Delete on a single row. */}
+                                {cardUrl && (
+                                    <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', opacity: 0, transition: 'opacity 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, flexDirection: 'row', padding: '0 8px', flexWrap: 'nowrap' }}
                                         onMouseEnter={e => e.currentTarget.style.opacity = 1}
                                         onMouseLeave={e => e.currentTarget.style.opacity = 0}
                                     >
-                                        <button onClick={e => { e.stopPropagation(); navigate(`/speakers/sns/${s.id}`); }} style={{ background: 'rgba(19,217,153,0.9)', color: '#000', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 700, fontSize: '0.75rem', cursor: 'pointer', width: 110 }}>
-                                            Edit Card
+                                        <button onClick={e => { e.stopPropagation(); navigate(editRoute); }} title="Edit Card" style={{ background: isAttendingView ? 'rgba(139,92,246,0.9)' : 'rgba(19,217,153,0.9)', color: isAttendingView ? '#fff' : '#000', border: 'none', borderRadius: 8, padding: '6px 10px', fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+                                            <BsPencil size={12} /> Edit
                                         </button>
-                                        <button onClick={e => { e.stopPropagation(); handleDownloadCard(s); }} style={{ background: 'rgba(255,255,255,0.15)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 8, padding: '6px 14px', fontWeight: 600, fontSize: '0.75rem', cursor: 'pointer', width: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
-                                            <BsDownload size={12} /> Download
-                                        </button>
-                                        <button onClick={e => { e.stopPropagation(); handleWhatsAppShare(s); }} style={{ background: '#25D366', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 700, fontSize: '0.75rem', cursor: 'pointer', width: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
-                                            <BsWhatsapp size={12} /> WhatsApp
+                                        <button onClick={e => { e.stopPropagation(); handleDownloadCard(s, isAttendingView ? 'attending' : 'speaker'); }} title="Download Card" style={{ background: 'rgba(255,255,255,0.15)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 8, padding: '6px 10px', fontWeight: 600, fontSize: '0.72rem', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+                                            <BsDownload size={12} /> Save
                                         </button>
                                         {canManage && (
-                                            <button onClick={e => { e.stopPropagation(); handleDeleteCard(s); }} style={{ background: 'rgba(239,68,68,0.85)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 600, fontSize: '0.75rem', cursor: 'pointer', width: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
-                                                <BsTrash size={12} /> Delete Card
+                                            <button onClick={e => { e.stopPropagation(); handleDeleteCard(s, isAttendingView ? 'attending' : 'speaker'); }} title="Delete Card" style={{ background: 'rgba(239,68,68,0.85)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontWeight: 600, fontSize: '0.72rem', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+                                                <BsTrash size={12} /> Delete
                                             </button>
                                         )}
                                     </div>
@@ -587,23 +662,26 @@ export default function SpeakersPage() {
                                 </div>
                                 <div style={{ marginTop: 6, display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                                     <button className="btn-action" title="View" onClick={() => navigate(`/speakers/view/${s.id}`)}><BsPersonBadge size={13} /></button>
-                                    <button
-                                        className="btn-action"
-                                        title={s.sns_card_url
-                                            ? (s.mobile_no ? `Send card on WhatsApp to ${s.name}` : 'Share card on WhatsApp')
-                                            : 'Generate the SNS card before sharing'}
-                                        onClick={() => handleWhatsAppShare(s)}
-                                        style={{ color: s.sns_card_url ? '#25D366' : 'var(--text-muted)' }}
-                                    >
-                                        <BsWhatsapp size={13} />
-                                    </button>
+                                    {/* Share is hidden in the attending gallery —
+                                        attending cards are download-only. */}
+                                    {s.sns_card_url && viewMode !== 'attending' && (
+                                        <button
+                                            className="btn-action"
+                                            title="Share SNS card (WhatsApp, LinkedIn, X, …)"
+                                            onClick={(e) => handleWhatsAppShare(e, s)}
+                                            style={{ color: 'var(--accent)' }}
+                                        >
+                                            <BsShare size={13} />
+                                        </button>
+                                    )}
                                     {canManage && (
                                         <button className="btn-action" title="Edit Speaker" onClick={() => navigate(`/speakers/edit/${s.id}`)}><BsPencil size={13} /></button>
                                     )}
                                 </div>
                             </div>
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
                 )}
                 {/* Hide the infinite-scroll loader while searching — search
@@ -687,15 +765,14 @@ export default function SpeakersPage() {
                                 <td className="mob-full">
                                     <div className="d-flex gap-2">
                                         <button className="btn-action" title="View" onClick={() => navigate(`/speakers/view/${s.id}`)}><BsPersonBadge size={13} /></button>
-                                        <button className="btn-action" title="SNS Card" onClick={() => navigate(`/speakers/sns/${s.id}`)}><BsShare size={13} /></button>
                                         {s.sns_card_url && (
                                             <button
                                                 className="btn-action"
-                                                title={s.mobile_no ? `Send card on WhatsApp to ${s.name}` : 'Share card on WhatsApp'}
-                                                onClick={() => handleWhatsAppShare(s)}
-                                                style={{ color: '#25D366' }}
+                                                title="Share SNS card (WhatsApp, LinkedIn, X, …)"
+                                                onClick={(e) => handleWhatsAppShare(e, s)}
+                                                style={{ color: 'var(--accent)' }}
                                             >
-                                                <BsWhatsapp size={13} />
+                                                <BsShare size={13} />
                                             </button>
                                         )}
                                         {canManage && (
@@ -751,16 +828,16 @@ export default function SpeakersPage() {
                                 style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, padding: '6px 14px', fontWeight: 600, fontSize: '0.78rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, marginLeft: 6 }}>
                                 <BsDownload size={13} /> Download
                             </button>
-                            <button onClick={() => { handleWhatsAppShare(previewCard.speaker); setPreviewCard(null); }}
-                                style={{ background: '#25D366', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}>
-                                <BsWhatsapp size={13} /> WhatsApp
+                            <button onClick={(e) => { handleWhatsAppShare(e, previewCard.speaker); setPreviewCard(null); }}
+                                style={{ background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}>
+                                <BsShare size={13} /> Share
                             </button>
-                            <button onClick={() => navigate(`/speakers/sns/${previewCard.speaker.id}`)}
-                                style={{ background: '#13d999', color: '#000', border: 'none', borderRadius: 8, padding: '6px 16px', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer' }}>
+                            <button onClick={() => navigate(viewMode === 'attending' ? `/speakers/attending/${previewCard.speaker.id}` : `/speakers/sns/${previewCard.speaker.id}`)}
+                                style={{ background: viewMode === 'attending' ? '#8b5cf6' : '#13d999', color: viewMode === 'attending' ? '#fff' : '#000', border: 'none', borderRadius: 8, padding: '6px 16px', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer' }}>
                                 Edit Card
                             </button>
                             {canManage && (
-                                <button onClick={() => handleDeleteCard(previewCard.speaker)}
+                                <button onClick={() => handleDeleteCard(previewCard.speaker, viewMode === 'attending' ? 'attending' : 'speaker')}
                                     style={{ background: 'rgba(239,68,68,0.85)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 14px', fontWeight: 600, fontSize: '0.78rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}>
                                     <BsTrash size={12} /> Delete Card
                                 </button>
@@ -775,12 +852,14 @@ export default function SpeakersPage() {
                 document.body
             )}
 
-            {/* Bulk SNS Generator Modal */}
+            {/* Bulk Card Generator Modal — handles both 'speaker' (SNS) and
+                'attending' modes; the active mode is held in bulkCardType. */}
             <BulkSNSModal
                 show={showBulkModal}
-                onHide={() => setShowBulkModal(false)}
+                onHide={() => setBulkCardType(null)}
                 speakers={speakers}
                 filterEvent={filterEvent}
+                cardType={bulkCardType || 'speaker'}
                 onComplete={() => load()}
             />
 
@@ -854,7 +933,14 @@ export default function SpeakersPage() {
     );
 }
 
-function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete }) {
+function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete, cardType = 'speaker' }) {
+    // Pivot all card-type-specific behavior off one boolean. Keeps the diff
+    // localized (template column, save call, zip-source field, seed text).
+    const isAttending = cardType === 'attending';
+    const labels = isAttending
+        ? { title: 'Bulk "I am Attending" Card Generator', zipName: 'attending-cards.zip', filePrefix: 'attending', emptyTitle: 'No attending master template found', emptyHint: 'Design a master template for "I am attending" first before generating cards in bulk.', designRoute: `/events/attending-template/${filterEvent}` }
+        : { title: 'Bulk SNS Card Generator',           zipName: 'sns-cards.zip',         filePrefix: 'sns',        emptyTitle: 'No master template found',           emptyHint: 'Design a master template for this event first before generating cards in bulk.',          designRoute: `/events/sns-template/${filterEvent}` };
+
     const navigate = useNavigate();
     const [event, setEvent] = useState(null);
     const [template, setTemplate] = useState(null);
@@ -882,23 +968,24 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete }) {
     const handleDownloadAllGenerated = async (doneResults) => {
         setDownloadingZip(true);
         try {
-            // Re-fetch speakers to get fresh sns_card_url values
+            // Re-fetch speakers to get fresh card-url values for the active card type.
             const { data: freshSpeakers } = await getSpeakers(filterEvent || undefined);
+            const urlField = isAttending ? 'attending_card_url' : 'sns_card_url';
             const zip = new JSZip();
             await Promise.all(doneResults.map(async (r) => {
                 const fresh = freshSpeakers.find(s => s.id === r.id);
-                if (!fresh?.sns_card_url) return;
+                if (!fresh?.[urlField]) return;
                 try {
-                    const res = await fetch(getImageUrl(fresh.sns_card_url));
+                    const res = await fetch(getImageUrl(fresh[urlField]));
                     const blob = await res.blob();
-                    zip.file(`sns-${fresh.name.replace(/\s+/g, '-').toLowerCase()}.png`, blob);
+                    zip.file(`${labels.filePrefix}-${fresh.name.replace(/\s+/g, '-').toLowerCase()}.png`, blob);
                 } catch (e) { console.warn(`Skip ${fresh.name}`, e); }
             }));
             const content = await zip.generateAsync({ type: 'blob' });
             const blobUrl = URL.createObjectURL(content);
             const a = document.createElement('a');
             a.href = blobUrl;
-            a.download = 'sns-cards.zip';
+            a.download = labels.zipName;
             document.body.appendChild(a);
             a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
@@ -919,11 +1006,12 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete }) {
         getEvent(filterEvent).then(r => {
             const evt = r.data;
             setEvent(evt);
-            if (evt.sns_card_template) {
+            const rawTemplate = isAttending ? evt.attending_card_template : evt.sns_card_template;
+            if (rawTemplate) {
                 try {
-                    const tmpl = typeof evt.sns_card_template === 'string'
-                        ? JSON.parse(evt.sns_card_template)
-                        : evt.sns_card_template;
+                    const tmpl = typeof rawTemplate === 'string'
+                        ? JSON.parse(rawTemplate)
+                        : rawTemplate;
                     setTemplate(tmpl);
                 } catch (e) { console.error('Template parse failed', e); }
             } else {
@@ -959,9 +1047,10 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete }) {
                 const dataUrl = await toPng(cardRef.current, { pixelRatio: 2, style: { transform: 'none' } });
                 const blob = await (await fetch(dataUrl)).blob();
                 const formData = new FormData();
-                formData.append('sns_card', blob, `sns-bulk-${speaker.id}-${Date.now()}.png`);
+                formData.append('sns_card', blob, `${labels.filePrefix}-bulk-${speaker.id}-${Date.now()}.png`);
                 const meta = { ...template, background: template.background && !template.background.startsWith('blob:') ? template.background : null };
-                await saveSNSCard(speaker.id, formData, meta);
+                const saveFn = isAttending ? saveAttendingCard : saveSNSCard;
+                await saveFn(speaker.id, formData, meta);
                 setResults(prev => prev.map(r => r.id === speaker.id ? { ...r, status: 'done' } : r));
             } catch (err) {
                 console.error(`Bulk SNS failed for ${speaker.name}:`, err);
@@ -1004,16 +1093,16 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete }) {
             <Modal show={show} onHide={!generating ? onHide : undefined} centered size="md" contentClassName="premium-modal">
                 <Modal.Header closeButton={!generating} closeVariant="white">
                     <Modal.Title style={{ fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <BsLightningChargeFill style={{ color: '#13d999' }} /> Bulk SNS Card Generator
+                        <BsLightningChargeFill style={{ color: isAttending ? '#a78bfa' : '#13d999' }} /> {labels.title}
                     </Modal.Title>
                 </Modal.Header>
                 <Modal.Body>
                     {!template ? (
                         <div className="text-center py-5">
                             <BsLayoutTextWindow size={40} style={{ color: '#444', marginBottom: 16 }} />
-                            <p className="text-white mb-1">No master template found</p>
-                            <p className="text-muted small mb-4">Design a master template for this event first before generating cards in bulk.</p>
-                            <Button className="btn-accent" size="sm" onClick={() => { onHide(); navigate(`/events/sns-template/${filterEvent}`); }}>
+                            <p className="text-white mb-1">{labels.emptyTitle}</p>
+                            <p className="text-muted small mb-4">{labels.emptyHint}</p>
+                            <Button className="btn-accent" size="sm" onClick={() => { onHide(); navigate(labels.designRoute); }}>
                                 <BsLayoutTextWindow className="me-2" /> Design Master Template
                             </Button>
                         </div>
@@ -1123,7 +1212,17 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete }) {
                             const el = elements[key];
                             const pos = positions[key];
                             if (!el || !pos || el.show === false) return null;
-                            const text = key === 'name' ? currentSpeaker.name : key === 'designation' ? currentSpeaker.designation : currentSpeaker.company;
+                            // Slot semantics flip with cardType: in attending mode the
+                            // big slot reads "I am attending", the mid slot reads the
+                            // event title, and the small slot reads who's posting.
+                            let text;
+                            if (isAttending) {
+                                if (key === 'name')             text = 'I am attending';
+                                else if (key === 'designation') text = event?.title || '';
+                                else                            text = [currentSpeaker.name, currentSpeaker.designation].filter(Boolean).join(' · ');
+                            } else {
+                                text = key === 'name' ? currentSpeaker.name : key === 'designation' ? currentSpeaker.designation : currentSpeaker.company;
+                            }
                             return (
                                 <div key={key} style={{ position: 'absolute', left: pos.x * canvasSize.width, top: pos.y * canvasSize.height, color: el.color, fontSize: el.fontSize, fontFamily: el.fontFamily, fontWeight: el.fontWeight, letterSpacing: `${el.letterSpacing || 0}px`, textDecoration: ['underline','overline'].includes(el.textDecoration) ? el.textDecoration : 'none', textTransform: ['uppercase','capitalize'].includes(el.textDecoration) ? el.textDecoration : 'none', whiteSpace: 'pre-wrap', zIndex: 20 }}>
                                     {text || ''}

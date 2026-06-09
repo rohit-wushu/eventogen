@@ -51,7 +51,7 @@ const parseJsonMaybe = (v) => {
 
 // Background image uploader — routed through the shared storage adapter
 // so it falls back to disk or hits S3 depending on env config.
-const upload = createUpload('cert-bg', { limits: { fileSize: 20 * 1024 * 1024 } });
+const upload = createUpload('cert-bg', { limits: { fileSize: 20 * 1024 * 1024 }, source: 'certificates' });
 
 // GET /api/certificate-templates?event_id=N — list templates, scoped by tenant.
 router.get('/', async (req, res) => {

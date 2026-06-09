@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { Table, Button, Modal, Form, Alert, Tabs, Tab, Row, Col } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import { getEvents, createEvent, updateEvent, deleteEvent } from '../services/api';
+import AsyncButton from '../components/AsyncButton';
+import QuotaButton from '../components/QuotaButton';
+import { invalidateQuota } from '../hooks/useQuota';
 import { BsPlus, BsPencil, BsTrash, BsCalendarEvent, BsPalette, BsShieldLock, BsLayoutTextWindow, BsImage, BsCodeSlash, BsFunnel, BsQrCode } from 'react-icons/bs';
 
 import { getImageUrl } from '../utils/imageUrl';
@@ -118,11 +121,12 @@ export default function EventsPage() {
             else await createEvent(data);
             setShow(false);
             load();
+            if (!editing) invalidateQuota();
         } catch (err) { setError(err.response?.data?.error || 'Failed'); }
     };
 
     const handleDelete = async (id) => {
-        if (window.confirm('Delete this event?')) { await deleteEvent(id); load(); }
+        if (window.confirm('Delete this event?')) { await deleteEvent(id); load(); invalidateQuota(); }
     };
 
     return (
@@ -132,7 +136,11 @@ export default function EventsPage() {
                     <h4>Events</h4>
                     <p className='text-white small'>Manage all your events in one place.</p>
                 </div>
-                {canManage && <Button className="btn-accent d-flex align-items-center gap-2" onClick={() => openModal()}><BsPlus size={18} /> Create Event</Button>}
+                {canManage && (
+                    <QuotaButton resource="events" className="btn-accent d-flex align-items-center gap-2" onClick={() => openModal()}>
+                        <BsPlus size={18} /> Create Event
+                    </QuotaButton>
+                )}
             </div>
 
             {error && <Alert variant="danger" className="mb-4 py-2" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', borderRadius: 'var(--radius-lg)' }}>{error}</Alert>}
@@ -415,7 +423,9 @@ export default function EventsPage() {
                 </Modal.Body>
                 <Modal.Footer>
                     <Button variant="link" onClick={() => setShow(false)} style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>Cancel</Button>
-                    <Button className="btn-accent" onClick={handleSave}>Save Changes</Button>
+                    <AsyncButton className="btn btn-accent" onClick={handleSave} loadingText={editing ? 'Saving…' : 'Creating…'}>
+                        {editing ? 'Save Changes' : 'Create Event'}
+                    </AsyncButton>
                 </Modal.Footer>
             </Modal>
 

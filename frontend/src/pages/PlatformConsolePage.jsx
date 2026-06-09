@@ -6,15 +6,18 @@ import {
     extendTenantTrial, suspendTenant, activateTenant, changeTenantPlan, updateTenantFeatures,
     getPlatformInvoices, getPlatformPlans, createPlatformPlan, updatePlatformPlan, deletePlatformPlan,
     getPlatformAnalytics, getPlatformAnnouncements, createPlatformAnnouncement,
-    updatePlatformAnnouncement, deletePlatformAnnouncement, uploadAnnouncementPoster
+    updatePlatformAnnouncement, deletePlatformAnnouncement, uploadAnnouncementPoster,
+    updateMyProfile,
 } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { getImageUrl } from '../utils/imageUrl';
 import {
     BsShieldLockFill, BsBuilding, BsReceipt, BsBarChart, BsStars,
     BsCurrencyRupee, BsPeople, BsClockHistory, BsPauseCircle,
     BsPlayCircle, BsPencilSquare, BsCalendarEvent, BsMegaphone,
     BsKey, BsCheckCircleFill, BsEye, BsEyeSlash,
-    BsGraphUpArrow, BsTrash, BsPlusLg, BsBellFill, BsAward
+    BsGraphUpArrow, BsTrash, BsPlusLg, BsBellFill, BsAward,
+    BsPersonCircle, BsEnvelopeAtFill, BsLock, BsSave, BsExclamationTriangleFill,
 } from 'react-icons/bs';
 import {
     LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -51,9 +54,216 @@ export function PlatformPlansPage() {
 export function PlatformAnnouncementsPage() {
     return <PageShell icon={BsMegaphone} title="Announcements"><AnnouncementsTab /></PageShell>;
 }
+export function PlatformProfilePage() {
+    return <PageShell icon={BsPersonCircle} title="My Profile"><ProfileTab /></PageShell>;
+}
 
 // Kept as the default export for backwards compat if anything else imports it.
 export default PlatformDashboardPage;
+
+// ───────────────── Profile (My Account) ─────────────────
+//
+// Lets the signed-in super admin update their own display name, sign-in
+// email, and password. Hits PUT /users/me (which already handles NULL
+// tenant_id for super admins). Email + password changes are gated on
+// the current password — same security pattern as tenant users' My
+// Profile modal.
+function ProfileTab() {
+    const { user, setUser } = useAuth();
+
+    // Three independent panels — separate dirty/saving state per panel
+    // so the user can save name without surrendering an in-progress
+    // email/password edit (and vice versa).
+    const [name, setName] = useState(user?.name || '');
+    const [savingName, setSavingName] = useState(false);
+    const [nameMsg, setNameMsg] = useState(null);
+
+    const [email, setEmail] = useState(user?.email || '');
+    const [emailCurrentPw, setEmailCurrentPw] = useState('');
+    const [savingEmail, setSavingEmail] = useState(false);
+    const [emailMsg, setEmailMsg] = useState(null);
+
+    const [pwCurrent, setPwCurrent] = useState('');
+    const [pwNew, setPwNew] = useState('');
+    const [pwConfirm, setPwConfirm] = useState('');
+    const [savingPw, setSavingPw] = useState(false);
+    const [pwMsg, setPwMsg] = useState(null);
+    const [showPw, setShowPw] = useState(false);
+
+    const emailChanged = email.trim().toLowerCase() !== (user?.email || '').trim().toLowerCase();
+
+    const handleSaveName = async () => {
+        if (!name.trim()) return setNameMsg({ type: 'danger', text: 'Name cannot be empty.' });
+        setSavingName(true); setNameMsg(null);
+        try {
+            const r = await updateMyProfile({ name: name.trim() });
+            setUser?.(u => ({ ...u, name: r.data?.name || name.trim() }));
+            setNameMsg({ type: 'success', text: 'Display name updated.' });
+        } catch (err) {
+            setNameMsg({ type: 'danger', text: err.response?.data?.error || 'Failed to update name.' });
+        } finally { setSavingName(false); }
+    };
+
+    const handleSaveEmail = async () => {
+        if (!emailChanged) return;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+            return setEmailMsg({ type: 'danger', text: 'Enter a valid email address.' });
+        }
+        if (!emailCurrentPw) return setEmailMsg({ type: 'danger', text: 'Enter your current password to confirm.' });
+        setSavingEmail(true); setEmailMsg(null);
+        try {
+            const r = await updateMyProfile({ email: email.trim(), currentPassword: emailCurrentPw });
+            setUser?.(u => ({ ...u, email: r.data?.email || email.trim() }));
+            setEmailCurrentPw('');
+            setEmailMsg({ type: 'success', text: 'Sign-in email updated. Use the new address from your next login.' });
+        } catch (err) {
+            setEmailMsg({ type: 'danger', text: err.response?.data?.error || 'Failed to update email.' });
+        } finally { setSavingEmail(false); }
+    };
+
+    const handleSavePassword = async () => {
+        if (!pwCurrent) return setPwMsg({ type: 'danger', text: 'Enter your current password.' });
+        if (!pwNew || pwNew.length < 6) return setPwMsg({ type: 'danger', text: 'New password must be at least 6 characters.' });
+        if (pwNew !== pwConfirm) return setPwMsg({ type: 'danger', text: 'New password and confirmation do not match.' });
+        setSavingPw(true); setPwMsg(null);
+        try {
+            await updateMyProfile({ currentPassword: pwCurrent, newPassword: pwNew });
+            setPwCurrent(''); setPwNew(''); setPwConfirm('');
+            setPwMsg({ type: 'success', text: 'Password updated. Use the new password from your next login.' });
+        } catch (err) {
+            setPwMsg({ type: 'danger', text: err.response?.data?.error || 'Failed to update password.' });
+        } finally { setSavingPw(false); }
+    };
+
+    const card = {
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 14,
+        padding: '20px 22px',
+        marginBottom: 16,
+    };
+    const labelStyle = { fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', display: 'block', marginBottom: 6 };
+    const inputStyle = { background: 'rgba(0,0,0,0.18)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' };
+
+    const Banner = ({ msg, onClose }) => msg ? (
+        <Alert variant={msg.type} dismissible onClose={onClose} className="py-2 mb-3 d-flex align-items-center gap-2" style={{ fontSize: 13 }}>
+            {msg.type === 'success' ? <BsCheckCircleFill /> : <BsExclamationTriangleFill />} {msg.text}
+        </Alert>
+    ) : null;
+
+    return (
+        <div style={{ maxWidth: 720 }}>
+            {/* Display name */}
+            <div style={card}>
+                <div className="d-flex align-items-center gap-2 mb-3">
+                    <BsPersonCircle size={18} style={{ color: '#a78bfa' }} />
+                    <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>Display name</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Shown across the platform console.</div>
+                    </div>
+                </div>
+                <Banner msg={nameMsg} onClose={() => setNameMsg(null)} />
+                <Form.Label style={labelStyle}>Name</Form.Label>
+                <Form.Control value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="Platform Owner" />
+                <div className="d-flex justify-content-end mt-3">
+                    <Button
+                        onClick={handleSaveName}
+                        disabled={savingName || name.trim() === (user?.name || '').trim()}
+                        style={{ background: 'linear-gradient(135deg, #8b5cf6, #ec4899)', border: 'none', fontWeight: 600, borderRadius: 10 }}
+                    >
+                        <BsSave className="me-1" /> {savingName ? 'Saving…' : 'Save name'}
+                    </Button>
+                </div>
+            </div>
+
+            {/* Email */}
+            <div style={card}>
+                <div className="d-flex align-items-center gap-2 mb-3">
+                    <BsEnvelopeAtFill size={18} style={{ color: '#a78bfa' }} />
+                    <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>Sign-in email</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>The address you use to log in. Requires your current password to change.</div>
+                    </div>
+                </div>
+                <Banner msg={emailMsg} onClose={() => setEmailMsg(null)} />
+                <Form.Label style={labelStyle}>Email address</Form.Label>
+                <Form.Control type="email" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} placeholder="owner@example.com" />
+                {emailChanged && (
+                    <div style={{ marginTop: 12 }}>
+                        <Form.Label style={{ ...labelStyle, color: '#f59e0b' }}>Current password (required)</Form.Label>
+                        <Form.Control
+                            type="password"
+                            value={emailCurrentPw}
+                            onChange={(e) => setEmailCurrentPw(e.target.value)}
+                            autoComplete="current-password"
+                            style={inputStyle}
+                        />
+                    </div>
+                )}
+                <div className="d-flex justify-content-end mt-3">
+                    <Button
+                        onClick={handleSaveEmail}
+                        disabled={savingEmail || !emailChanged}
+                        style={{ background: 'linear-gradient(135deg, #8b5cf6, #ec4899)', border: 'none', fontWeight: 600, borderRadius: 10 }}
+                    >
+                        <BsSave className="me-1" /> {savingEmail ? 'Saving…' : 'Save email'}
+                    </Button>
+                </div>
+            </div>
+
+            {/* Password */}
+            <div style={card}>
+                <div className="d-flex align-items-center gap-2 mb-3">
+                    <BsLock size={18} style={{ color: '#a78bfa' }} />
+                    <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>Password</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Minimum 6 characters. Verifies the current password before rotating.</div>
+                    </div>
+                    <Button
+                        variant="link" size="sm"
+                        onClick={() => setShowPw(s => !s)}
+                        className="ms-auto"
+                        style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontSize: 12 }}
+                    >
+                        {showPw ? <BsEyeSlash /> : <BsEye />} {showPw ? 'Hide' : 'Show'}
+                    </Button>
+                </div>
+                <Banner msg={pwMsg} onClose={() => setPwMsg(null)} />
+                <Form.Label style={labelStyle}>Current password</Form.Label>
+                <Form.Control type={showPw ? 'text' : 'password'} value={pwCurrent} onChange={(e) => setPwCurrent(e.target.value)} autoComplete="current-password" style={inputStyle} />
+                <div className="row g-2 mt-2">
+                    <div className="col-md-6">
+                        <Form.Label style={labelStyle}>New password</Form.Label>
+                        <Form.Control type={showPw ? 'text' : 'password'} value={pwNew} onChange={(e) => setPwNew(e.target.value)} autoComplete="new-password" style={inputStyle} />
+                    </div>
+                    <div className="col-md-6">
+                        <Form.Label style={labelStyle}>Confirm new password</Form.Label>
+                        <Form.Control type={showPw ? 'text' : 'password'} value={pwConfirm} onChange={(e) => setPwConfirm(e.target.value)} autoComplete="new-password" style={inputStyle} />
+                    </div>
+                </div>
+                <div className="d-flex justify-content-end mt-3">
+                    <Button
+                        onClick={handleSavePassword}
+                        disabled={savingPw || !pwCurrent || !pwNew || !pwConfirm}
+                        style={{ background: 'linear-gradient(135deg, #8b5cf6, #ec4899)', border: 'none', fontWeight: 600, borderRadius: 10 }}
+                    >
+                        <BsSave className="me-1" /> {savingPw ? 'Saving…' : 'Update password'}
+                    </Button>
+                </div>
+            </div>
+
+            {/* Read-only meta — useful when supporting another super admin */}
+            <div style={{ ...card, background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>Account info</div>
+                <div className="d-flex flex-wrap gap-3" style={{ fontSize: 13 }}>
+                    <div><span style={{ color: 'var(--text-muted)' }}>User ID:</span> <strong style={{ color: 'var(--text-primary)' }}>{user?.id}</strong></div>
+                    <div><span style={{ color: 'var(--text-muted)' }}>Role:</span> <strong style={{ color: 'var(--text-primary)' }}>{user?.role}</strong></div>
+                    <div><Badge bg="danger">Super Admin</Badge></div>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 // ───────────────── Dashboard ─────────────────
 function DashboardTab() {
@@ -777,8 +987,10 @@ function CheckIcon({ gradient }) {
 // Compact grey limits pill for the light pricing cards — lives inside the
 // white card body, so its palette is the opposite of the dark-mode LimitPill.
 function MiniLimit({ label, value }) {
-    const unlimited = Number(value) === 0;
-    const display = unlimited ? '∞' : Number(value).toLocaleString('en-IN');
+    // Accept either a number (count) or a pre-formatted string (e.g. "100 MB").
+    const isString = typeof value === 'string';
+    const unlimited = isString ? value === '∞' : Number(value) === 0;
+    const display = isString ? value : (unlimited ? '∞' : Number(value).toLocaleString('en-IN'));
     return (
         <div style={{ padding: '2px 4px' }}>
             <div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
@@ -1108,6 +1320,7 @@ function PlansTab() {
         max_speakers: 50,
         max_attendees: 200,
         max_users: 3,
+        max_storage_mb: 100,
         features: '',
         is_public: 1
     });
@@ -1245,6 +1458,7 @@ function PlansTab() {
                                     <MiniLimit label="Speakers" value={p.max_speakers} />
                                     <MiniLimit label="Attendees" value={p.max_attendees} />
                                     <MiniLimit label="Team" value={p.max_users} />
+                                    <MiniLimit label="Storage" value={p.max_storage_mb ? `${p.max_storage_mb >= 1024 ? (p.max_storage_mb/1024).toFixed(1) + ' GB' : p.max_storage_mb + ' MB'}` : '∞'} />
                                 </div>
                             </div>
 
@@ -1389,6 +1603,7 @@ function PlansTab() {
                                         <LimitInput label="Max speakers" value={editing.max_speakers} onChange={v => setEditing({ ...editing, max_speakers: v })} />
                                         <LimitInput label="Max attendees" value={editing.max_attendees} onChange={v => setEditing({ ...editing, max_attendees: v })} />
                                         <LimitInput label="Max team users" value={editing.max_users} onChange={v => setEditing({ ...editing, max_users: v })} />
+                                        <LimitInput label="Max storage (MB)" value={editing.max_storage_mb ?? 0} onChange={v => setEditing({ ...editing, max_storage_mb: v })} />
                                     </div>
                                 </SectionCard>
 
@@ -1428,6 +1643,7 @@ function PlansTab() {
                                             max_speakers: Number(editing.max_speakers),
                                             max_attendees: Number(editing.max_attendees),
                                             max_users: Number(editing.max_users),
+                                            max_storage_mb: Number(editing.max_storage_mb ?? 0),
                                             features: featuresArr,
                                             is_public: editing.is_public ? 1 : 0
                                         });

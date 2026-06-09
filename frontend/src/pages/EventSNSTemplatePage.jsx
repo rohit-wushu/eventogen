@@ -5,8 +5,8 @@ import Cropper from 'react-cropper';
 import 'cropperjs/dist/cropper.css';
 import { Button, Form, Spinner, Accordion, Tabs, Tab } from 'react-bootstrap';
 import { toPng } from 'html-to-image';
-import { BsDownload, BsArrowLeft, BsArrowsMove, BsLayoutTextWindow, BsShieldLock, BsMagic, BsStars, BsChatDots, BsSend, BsRobot, BsImage, BsCheckCircleFill, BsTextLeft, BsDistributeVertical } from 'react-icons/bs';
-import { getEvent, updateEventTemplate } from '../services/api';
+import { BsDownload, BsArrowLeft, BsArrowsMove, BsLayoutTextWindow, BsShieldLock, BsMagic, BsStars, BsChatDots, BsSend, BsRobot, BsImage, BsCheckCircleFill, BsTextLeft, BsDistributeVertical, BsLightningChargeFill } from 'react-icons/bs';
+import { getEvent, updateEventTemplate, updateEventAttendingTemplate, bulkApplySNSTemplate, bulkApplyAttendingTemplate } from '../services/api';
 import Draggable from 'react-draggable';
 import { getImageUrl } from '../utils/imageUrl';
 
@@ -89,19 +89,23 @@ const selectionStyles = `
     ::-webkit-scrollbar-thumb { background: #3d3d5c; border-radius: 10px; }
 `;
 
-export default function EventSNSTemplatePage() {
+// cardType: 'speaker' (default) edits events.sns_card_template;
+// 'attending' edits events.attending_card_template — same designer UI,
+// just bound to a different column so the two layouts stay independent.
+export default function EventSNSTemplatePage({ cardType = 'speaker' }) {
     return (
         <>
             <style>{selectionStyles}</style>
-            <TemplateDesignerInternal />
+            <TemplateDesignerInternal cardType={cardType} />
         </>
     );
 }
 
-function TemplateDesignerInternal() {
+function TemplateDesignerInternal({ cardType = 'speaker' }) {
     const { id } = useParams();
     const { user } = useAuth();
     const navigate = useNavigate();
+    const isAttending = cardType === 'attending';
     
     const [event, setEvent] = useState(null);
     const [placeholderSpeaker] = useState({
@@ -132,7 +136,7 @@ function TemplateDesignerInternal() {
     const [photoSettings, setPhotoSettings] = useState({ size: 400 });
     const [canvasSize, setCanvasSize] = useState({ width: 1080, height: 1080 });
     const [viewportScale, setViewportScale] = useState(1);
-    const [logoSettings, setLogoSettings] = useState({ eventSize: 100, companySize: 100, showEvent: true, showCompany: true });
+    const [logoSettings, setLogoSettings] = useState({ eventSize: 100, companySize: 100, showEvent: false, showCompany: false });
     const [bgOverlay, setBgOverlay] = useState({ color: '#000000', opacity: 0 });
     const [bgPosition, setBgPosition] = useState('center');
     const [selectedFormat, setSelectedFormat] = useState(null);
@@ -173,10 +177,49 @@ function TemplateDesignerInternal() {
     });
 
     const [elements, setElements] = useState({
-        name: { text: 'Speaker Full Name', color: '#ffffff', fontSize: 40, fontFamily: 'Inter', fontWeight: '800', textDecoration: 'none', letterSpacing: 0, show: true },
-        designation: { text: 'Designation / Role', color: '#ffffff', fontSize: 20, fontFamily: 'Inter', fontWeight: '500', textDecoration: 'none', letterSpacing: 0, show: true },
-        company: { text: 'Company Name', color: '#ffffff', fontSize: 18, fontFamily: 'Inter', fontWeight: '500', textDecoration: 'none', letterSpacing: 0, show: true },
+        name: { text: 'Speaker Full Name', color: '#ffffff', fontSize: 40, fontFamily: 'Inter', fontWeight: '800', textDecoration: 'none', letterSpacing: 0, lineHeight: 1.2, show: true },
+        designation: { text: 'Designation / Role', color: '#ffffff', fontSize: 20, fontFamily: 'Inter', fontWeight: '500', textDecoration: 'none', letterSpacing: 0, lineHeight: 1.3, show: true },
+        company: { text: 'Company Name', color: '#ffffff', fontSize: 18, fontFamily: 'Inter', fontWeight: '500', textDecoration: 'none', letterSpacing: 0, lineHeight: 1.3, show: true },
     });
+
+    // Add a free-text element ("Subtitle", "I am attending", etc.) at the
+    // canvas center. `isCustom: true` flags it for the controls UI (text
+    // editor + Remove button) and for the per-speaker generator's restore
+    // logic so custom text is preserved verbatim instead of being
+    // overwritten with speaker data.
+    const addCustomElement = () => {
+        const id = `custom_${Date.now()}`;
+        setElements(prev => ({
+            ...prev,
+            [id]: { text: 'New Text', color: '#ffffff', fontSize: 24, fontFamily: 'Inter', fontWeight: '600', textDecoration: 'none', letterSpacing: 0, lineHeight: 1.3, show: true, isCustom: true }
+        }));
+        setPositions(prev => ({
+            ...prev,
+            [id]: { x: 0.5, y: 0.5 }
+        }));
+    };
+
+    const removeElement = (key) => {
+        setElements(prev => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+        });
+        setPositions(prev => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+        });
+    };
+
+    // Convenience setter — matches SNSGenerator's signature so the per-
+    // element controls can share their JSX without a styling refactor.
+    const updateElement = (key, field, value) => {
+        setElements(prev => ({
+            ...prev,
+            [key]: { ...prev[key], [field]: value }
+        }));
+    };
 
     // Ensure ref exists for each element
     Object.keys(elements).forEach(key => {
@@ -220,10 +263,12 @@ function TemplateDesignerInternal() {
                     setBackground(getImageUrl(evt.sns_card_bg_url));
                 }
 
-                // Restore Template if exists, otherwise use default 1080x1080 format
-                if (evt.sns_card_template) {
+                // Restore Template if exists, otherwise use default 1080x1080 format.
+                // Each card type reads from its own column so layouts stay independent.
+                const savedTemplate = isAttending ? evt.attending_card_template : evt.sns_card_template;
+                if (savedTemplate) {
                     try {
-                        const design = typeof evt.sns_card_template === 'string' ? JSON.parse(evt.sns_card_template) : evt.sns_card_template;
+                        const design = typeof savedTemplate === 'string' ? JSON.parse(savedTemplate) : savedTemplate;
                         if (design.elements) {
                             setElements(prev => {
                                 const next = { ...prev };
@@ -245,7 +290,10 @@ function TemplateDesignerInternal() {
                         if (design.background) setBackground(design.background);
                         else if (evt.sns_card_bg_url) setBackground(getImageUrl(evt.sns_card_bg_url));
 
-                        if (design.logoSettings) setLogoSettings(design.logoSettings);
+                        // Always open with both logo toggles off — sizes and any
+                        // other saved fields restore as normal, but visibility
+                        // resets each session so the operator opts in explicitly.
+                        if (design.logoSettings) setLogoSettings({ ...design.logoSettings, showEvent: false, showCompany: false });
                         setSelectedFormat('restored');
                     } catch (e) { console.error("Template restore failed", e); }
                 }
@@ -254,27 +302,55 @@ function TemplateDesignerInternal() {
             .finally(() => setLoading(false));
     }, [id]);
 
+    // Shared builder so Save and Save+Apply send the exact same payload.
+    const buildTemplatePayload = () => ({
+        elements,
+        positions,
+        photoSettings,
+        canvasSize,
+        bgOverlay,
+        bgPosition,
+        // Don't persist blob: URLs — they expire with the session; SNSGenerator falls back to sns_card_bg_url
+        background: background && !background.startsWith('blob:') ? background : null,
+        logoSettings
+    });
+
     const handleSaveTemplate = async () => {
         setSaving(true);
         try {
-            const template = {
-                elements,
-                positions,
-                photoSettings,
-                canvasSize,
-                bgOverlay,
-                bgPosition,
-                // Don't persist blob: URLs — they expire with the session; SNSGenerator falls back to sns_card_bg_url
-                background: background && !background.startsWith('blob:') ? background : null,
-                logoSettings
-            };
-            await updateEventTemplate(id, template);
-            alert('Master Layout Template saved successfully! This will now be the default for all speaker cards in this event.');
+            const saveFn = isAttending ? updateEventAttendingTemplate : updateEventTemplate;
+            await saveFn(id, buildTemplatePayload());
+            alert(isAttending
+                ? 'I-am-attending master template saved! This layout will now seed every attending card in this event.'
+                : 'Master Layout Template saved successfully! This will now be the default for all speaker cards in this event.');
             navigate('/speakers');
         } catch (err) {
             alert('Failed to save template: ' + err.message);
         } finally {
             setSaving(false);
+        }
+    };
+
+    // Save the template and immediately push it onto every existing speaker's
+    // per-card design column. Without this, a freshly saved template only
+    // applies to *new* generations — existing speakers keep their old layout
+    // until each one is re-opened in the generator.
+    const [applying, setApplying] = useState(false);
+    const handleSaveAndApply = async () => {
+        const kind = isAttending ? 'attending' : 'speaker-announcement';
+        if (!window.confirm(`Save this master template and push it onto every existing speaker's ${kind} card in this event? Any per-card customisations they made will be overwritten.`)) return;
+        setApplying(true);
+        try {
+            const saveFn  = isAttending ? updateEventAttendingTemplate : updateEventTemplate;
+            const applyFn = isAttending ? bulkApplyAttendingTemplate    : bulkApplySNSTemplate;
+            await saveFn(id, buildTemplatePayload());
+            const { data } = await applyFn(id);
+            alert(`Template applied to ${data?.affected ?? 0} of ${data?.total ?? 0} speakers in this event.`);
+            navigate('/speakers');
+        } catch (err) {
+            alert('Failed to apply template: ' + (err?.response?.data?.error || err.message));
+        } finally {
+            setApplying(false);
         }
     };
 
@@ -399,7 +475,7 @@ function TemplateDesignerInternal() {
             <div className="ps-workspace animate-in">
                 <div className="ps-header">
                     <div className="ps-tabs">
-                        <div className="ps-tab active">Master Template Setup</div>
+                        <div className="ps-tab active">{isAttending ? 'I-am-Attending Master Template' : 'Master Template Setup'}</div>
                     </div>
                     <button className="ps-close-btn" onClick={() => navigate('/events')}>&times;</button>
                 </div>
@@ -615,24 +691,52 @@ function TemplateDesignerInternal() {
                                 {/* Text Elements */}
                                 {Object.entries(elements).map(([key, el], idx) => (
                                     <Accordion.Item eventKey={String(idx + 1)} key={key} className="bg-transparent border-0 mb-2">
-                                        <Accordion.Header><span className="text-capitalize">{key}</span></Accordion.Header>
+                                        <Accordion.Header>
+                                            <div className="d-flex align-items-center justify-content-between w-100 me-3">
+                                                <span className="text-capitalize">{el.isCustom ? (el.text || 'Custom').substring(0, 18) : key}</span>
+                                                {el.isCustom && (
+                                                    <Button
+                                                        variant="link"
+                                                        size="sm"
+                                                        className="p-0 text-danger text-decoration-none small"
+                                                        onClick={(e) => { e.stopPropagation(); removeElement(key); }}
+                                                    >Remove</Button>
+                                                )}
+                                            </div>
+                                        </Accordion.Header>
                                         <Accordion.Body>
                                             <div className="d-flex justify-content-between align-items-center mb-2">
                                                 <span className="small">Show element</span>
-                                                <Form.Check type="switch" checked={el.show} onChange={e => setElements({ ...elements, [key]: { ...el, show: e.target.checked } })} />
+                                                <Form.Check type="switch" checked={el.show} onChange={e => updateElement(key, 'show', e.target.checked)} />
                                             </div>
+                                            {el.isCustom && (
+                                                <Form.Group className="mb-2">
+                                                    <label className="small muted-label">Text</label>
+                                                    <Form.Control
+                                                        as="textarea"
+                                                        rows={2}
+                                                        size="sm"
+                                                        className="form-control-dark"
+                                                        value={el.text}
+                                                        onChange={e => updateElement(key, 'text', e.target.value)}
+                                                        placeholder="Enter text... (Enter for new line)"
+                                                        style={{ resize: 'none', lineHeight: 1.4 }}
+                                                        onKeyDown={e => e.key === 'Enter' && e.stopPropagation()}
+                                                    />
+                                                </Form.Group>
+                                            )}
                                             <div className="row g-2">
                                                 <div className="col-6">
                                                     <label className="small muted-label">Color</label>
-                                                    <Form.Control type="color" className="form-control form-control-color w-100" value={el.color} onChange={e => setElements({ ...elements, [key]: { ...el, color: e.target.value } })} style={{ border: '1px solid #3d3d5c' }} />
+                                                    <Form.Control type="color" className="form-control form-control-color w-100" value={el.color} onChange={e => updateElement(key, 'color', e.target.value)} style={{ border: '1px solid #3d3d5c' }} />
                                                 </div>
                                                 <div className="col-6">
                                                     <label className="small muted-label">Size (px)</label>
-                                                    <Form.Control type="number" size="sm" className="form-control-dark" value={el.fontSize} onChange={e => setElements({ ...elements, [key]: { ...el, fontSize: parseInt(e.target.value) } })} />
+                                                    <Form.Control type="number" size="sm" className="form-control-dark" value={el.fontSize} onChange={e => updateElement(key, 'fontSize', parseInt(e.target.value))} />
                                                 </div>
                                                 <div className="col-6 mt-2">
                                                     <label className="small muted-label">Weight</label>
-                                                    <Form.Select size="sm" className="form-select-dark" value={el.fontWeight} onChange={e => setElements({ ...elements, [key]: { ...el, fontWeight: e.target.value } })}>
+                                                    <Form.Select size="sm" className="form-select-dark" value={el.fontWeight} onChange={e => updateElement(key, 'fontWeight', e.target.value)}>
                                                         <option value="300">Light</option>
                                                         <option value="400">Normal</option>
                                                         <option value="500">Medium</option>
@@ -643,11 +747,11 @@ function TemplateDesignerInternal() {
                                                 </div>
                                                 <div className="col-6 mt-2">
                                                     <label className="small muted-label">Spacing</label>
-                                                    <Form.Control type="number" size="sm" className="form-control-dark" value={el.letterSpacing || 0} onChange={e => setElements({ ...elements, [key]: { ...el, letterSpacing: parseFloat(e.target.value) } })} />
+                                                    <Form.Control type="number" size="sm" className="form-control-dark" value={el.letterSpacing || 0} onChange={e => updateElement(key, 'letterSpacing', parseFloat(e.target.value))} />
                                                 </div>
                                                 <div className="col-12 mt-2">
                                                     <label className="small muted-label">Font</label>
-                                                    <Form.Select size="sm" className="form-select-dark" value={el.fontFamily} onChange={e => setElements({ ...elements, [key]: { ...el, fontFamily: e.target.value } })}>
+                                                    <Form.Select size="sm" className="form-select-dark" value={el.fontFamily} onChange={e => updateElement(key, 'fontFamily', e.target.value)}>
                                                         <option value="Inter">Inter</option>
                                                         <option value="Montserrat">Montserrat</option>
                                                         <option value="Poppins">Poppins</option>
@@ -660,6 +764,12 @@ function TemplateDesignerInternal() {
                                         </Accordion.Body>
                                     </Accordion.Item>
                                 ))}
+
+                                {/* Add Custom Text — same dashed-outline CTA style as the per-
+                                    speaker generator so the affordance is familiar. */}
+                                <Button variant="outline-accent" size="sm" className="w-100 mt-2 py-2 border-dashed" onClick={addCustomElement}>
+                                    + Add Custom Text
+                                </Button>
 
                                 {/* Logos */}
                                 <Accordion.Item eventKey="4" className="bg-transparent border-0 mb-2">
@@ -720,9 +830,17 @@ function TemplateDesignerInternal() {
 
                         {/* Bottom Action Bar */}
                         <div className="p-3 border-top border-secondary d-flex flex-column gap-2 bg-dark mt-auto">
-                            <Button className="btn-accent w-100 py-2" onClick={handleSaveTemplate} disabled={saving}>
+                            <Button className="btn-accent w-100 py-2" onClick={handleSaveTemplate} disabled={saving || applying}>
                                 {saving ? <Spinner size="sm" animation="border" className="me-2" /> : <BsLayoutTextWindow className="me-2" />}
                                 {saving ? 'Saving...' : 'Save Master Layout'}
+                            </Button>
+                            {/* Saves AND retroactively rewrites every existing
+                                speaker's card design so this template takes
+                                effect for them too — not just newly generated
+                                cards. */}
+                            <Button variant="outline-light" className="w-100 py-2" onClick={handleSaveAndApply} disabled={saving || applying} title="Save and push this layout onto every existing speaker in this event">
+                                {applying ? <Spinner size="sm" animation="border" className="me-2" /> : <BsLightningChargeFill className="me-2" />}
+                                {applying ? 'Applying to all speakers…' : 'Save & Apply to All Speakers'}
                             </Button>
                         </div>
                     </div>

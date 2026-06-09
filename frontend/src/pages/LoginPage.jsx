@@ -2,10 +2,9 @@ import { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Form, Alert, Spinner } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
-import { loginUser, forgotPassword, googleLogin, getSettings, signupTenant } from '../services/api';
+import { loginUser, forgotPassword, getSettings, signupTenant } from '../services/api';
 import { getImageUrl } from '../utils/imageUrl';
 import { BsArrowLeft, BsCheckCircleFill, BsEye, BsEyeSlash, BsArrowRight, BsStars, BsLightningChargeFill, BsShieldCheck, BsCalendarEvent, BsMic } from 'react-icons/bs';
-import { GoogleLogin } from '@react-oauth/google';
 
 export default function LoginPage() {
     const { login } = useAuth();
@@ -45,15 +44,6 @@ export default function LoginPage() {
             const msg = err.response?.data?.error || err.message || 'Login failed.';
             setError(err.message === 'Network Error' ? 'Cannot connect to server.' : msg);
         }
-        setLoading(false);
-    };
-
-    const handleGoogle = async (cred) => {
-        setError(''); setLoading(true);
-        try {
-            const res = await googleLogin(cred.credential);
-            login(res.data.token, res.data.user, res.data.pendingInvite);
-        } catch (err) { setError(err.response?.data?.error || 'Google sign-in failed.'); }
         setLoading(false);
     };
 
@@ -200,23 +190,9 @@ export default function LoginPage() {
                                 <img src={getImageUrl(brand.logo)} alt={brand.title} className="lx-right-logo" />
                             )}
                             <h2 className="lx-title">Sign in to {brand.title}</h2>
-                            <p className="lx-desc">Enter your details or continue with Google.</p>
+                            <p className="lx-desc">Enter your work email and password to continue.</p>
 
                             {error && <Alert className="lx-alert">{error}</Alert>}
-
-                            <div className="lx-google">
-                                <GoogleLogin
-                                    onSuccess={handleGoogle}
-                                    onError={() => setError('Google sign-in was cancelled or failed.')}
-                                    theme="filled_black"
-                                    shape="rectangular"
-                                    text="continue_with"
-                                    size="large"
-                                    width="400"
-                                />
-                            </div>
-
-                            <div className="lx-or"><span>or sign in with email</span></div>
 
                             <Form onSubmit={handleSubmit}>
                                 <Form.Group className="mb-3">

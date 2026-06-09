@@ -271,6 +271,7 @@ export default function AdminSettingsPage() {
                             <Form.Label className="text-white-50 small mb-3">Browser Tab Icon</Form.Label>
                             <div className="d-flex align-items-center gap-4">
                                 <div
+                                    className="logo-preview-box"
                                     style={{
                                         width: 64, height: 64, borderRadius: 10,
                                         background: 'rgba(255,255,255,0.05)',
@@ -386,6 +387,59 @@ export default function AdminSettingsPage() {
                 .custom-range::-webkit-slider-thumb {
                     background: var(--accent);
                     margin-top: -5px;
+                }
+                /* Light-theme readability fixes. The page was originally
+                   built dark-mode-only, so it hard-codes Bootstrap's
+                   text-white / text-white-50 classes everywhere. Overriding
+                   them via CSS vars here is one-line cheaper than swapping
+                   the className at every call site. */
+                [data-theme="light"] .admin-settings-tabs ~ * .text-white,
+                [data-theme="light"] .premium-card .text-white,
+                [data-theme="light"] .page-header .text-white {
+                    color: var(--text-primary) !important;
+                }
+                [data-theme="light"] .admin-settings-tabs ~ * .text-white-50,
+                [data-theme="light"] .premium-card .text-white-50 {
+                    color: var(--text-secondary) !important;
+                }
+                /* Disabled accent button in light mode — the global
+                   filter saturate/brightness washes the gradient out
+                   so much that white text on it has poor contrast
+                   against the white page background. Keep the
+                   purple readable instead. */
+                [data-theme="light"] .btn-accent:disabled,
+                [data-theme="light"] .btn-accent.disabled {
+                    background: linear-gradient(135deg, #b596f5, #9a76eb) !important;
+                    filter: none !important;
+                    opacity: 0.85;
+                    color: #fff !important;
+                }
+                /* The custom range track is white-on-white in light mode —
+                   give it a visible darker fill. */
+                [data-theme="light"] .custom-range::-webkit-slider-runnable-track {
+                    background: rgba(0,0,0,0.10);
+                }
+                [data-theme="light"] .custom-range::-moz-range-track {
+                    background: rgba(0,0,0,0.10);
+                }
+                /* The HR separator was inline-styled with border-color
+                   #fff, which is invisible against a white card in
+                   light mode. */
+                [data-theme="light"] .premium-card hr {
+                    border-color: var(--border-subtle) !important;
+                    opacity: 1 !important;
+                }
+                /* The 150x150 logo / favicon preview box uses near-white
+                   inline-styled background + border, so it vanishes on
+                   the white card in light mode. Override with the
+                   theme's subtle tones so the drop zone is visible. */
+                [data-theme="light"] .logo-preview-box {
+                    background: rgba(0,0,0,0.04) !important;
+                    border-color: rgba(0,0,0,0.15) !important;
+                }
+                [data-theme="light"] .logo-preview-box:hover {
+                    background: rgba(139,92,246,0.06) !important;
+                    border-color: var(--accent) !important;
                 }
             `}</style>
         </div>

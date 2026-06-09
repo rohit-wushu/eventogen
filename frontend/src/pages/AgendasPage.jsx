@@ -7,6 +7,7 @@ import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { useRef } from 'react';
 import { getImageUrl } from '../utils/imageUrl';
+import AsyncButton from '../components/AsyncButton';
 
 // "09:00" / "09:00:00" → "9:00 AM". Returns empty string for falsy input
 // so callers can safely inline it without guarding.
@@ -1172,7 +1173,9 @@ export default function AgendasPage() {
                 </Modal.Body>
                 <Modal.Footer style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
                     <Button variant="link" onClick={() => setShow(false)} style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>Cancel</Button>
-                    <Button className="btn-accent" onClick={handleSave}>Save Session</Button>
+                    <AsyncButton className="btn btn-accent" onClick={handleSave} loadingText={editing ? 'Saving…' : 'Adding…'}>
+                        {editing ? 'Save Session' : 'Add Session'}
+                    </AsyncButton>
                 </Modal.Footer>
             </Modal>
 

@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Table, Button, Modal, Form, Alert, Row, Col, OverlayTrigger, Popover } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import { getPartners, createPartner, updatePartner, deletePartner, reorderPartners, getEvents, getPartnerCategories, getSpeakers, getPartnerShowcaseConfig, savePartnerShowcaseConfig } from '../services/api';
 import PartnerShowcaseCustomizer from '../components/PartnerShowcaseCustomizer';
 import PartnerLogoArranger from '../components/PartnerLogoArranger';
+import AsyncButton from '../components/AsyncButton';
 import { BsPlus, BsPencil, BsTrash, BsBriefcase, BsLink45Deg, BsEye, BsGripVertical, BsTags, BsGear, BsCheck2 } from 'react-icons/bs';
 import { useNavigate } from 'react-router-dom';
 import { getImageUrl } from '../utils/imageUrl';
@@ -41,6 +42,13 @@ export default function PartnersPage() {
     // Active flag used to attach the global auto-scroll listener only
     // while a row is being dragged.
     const [isDragging, setIsDragging] = useState(false);
+
+    // Infinite-scroll slice. Renders only the first `visibleCount` rows; a
+    // loadMoreRef sentinel at the bottom triggers expansion via an
+    // IntersectionObserver. Without this, a 100-partner event mounts 100
+    // rows + 100 popovers + 100 drag handlers up-front, which jitters.
+    const [visibleCount, setVisibleCount] = useState(20);
+    const loadMoreRef = useRef(null);
 
     // Auto-scroll while dragging a row near the top or bottom of the
     // scrollable area — without this, reordering across a long partner
@@ -176,12 +184,36 @@ export default function PartnersPage() {
     };
 
     const load = () => {
-        getPartners().then(r => setPartners(Array.isArray(r.data) ? r.data : [])).catch(() => { });
+        getPartners().then(r => {
+            setPartners(Array.isArray(r.data) ? r.data : []);
+            setVisibleCount(20);
+        }).catch(() => { });
         getEvents().then(r => setEvents(Array.isArray(r.data) ? r.data : [])).catch(() => { });
         getPartnerCategories().then(r => setCategories(Array.isArray(r.data) ? r.data : [])).catch(() => { });
         getSpeakers().then(r => setSpeakers(Array.isArray(r.data) ? r.data : [])).catch(() => { });
     };
     useEffect(() => { load(); }, []);
+
+    // Reset the visible slice whenever the event filter narrows the list —
+    // otherwise an earlier expanded count "sticks" and lets us render rows
+    // that no longer match the filter (harmless, but wastes a re-render
+    // pass and confuses the loadMoreRef bookkeeping).
+    useEffect(() => { setVisibleCount(20); }, [filterEvent]);
+
+    // IntersectionObserver-driven incremental loading. Fires when the
+    // sentinel below the table scrolls into view — bumps the slice by 20.
+    // We rebind on every count-change so the observer captures the latest
+    // closure and disconnects cleanly when there's nothing more to load.
+    useEffect(() => {
+        if (!loadMoreRef.current) return;
+        if (visibleCount >= partners.length) return;
+        const node = loadMoreRef.current;
+        const obs = new IntersectionObserver(([entry]) => {
+            if (entry.isIntersecting) setVisibleCount(v => v + 20);
+        }, { rootMargin: '200px' });
+        obs.observe(node);
+        return () => obs.disconnect();
+    }, [visibleCount, partners.length]);
 
     // Refetch the category list whenever the partner-form's event changes,
     // so the dropdown only shows categories belonging to that event (plus legacy globals).
@@ -323,14 +355,22 @@ export default function PartnersPage() {
     // Always sort by the `sequence` field (then name) so the table honours
     // the ordering set in the Edit Partner modal — the API order alone can't
     // be relied on once a row's sequence is edited inline. Mirrors the
-    // backend's `ORDER BY p.sequence ASC, p.name ASC`.
-    const filteredPartners = (filterEvent
+    // backend's `ORDER BY p.sequence ASC, p.name ASC`. Memoised so the
+    // filter+sort doesn't rerun on every keystroke / drag re-render.
+    const filteredPartners = useMemo(() => (filterEvent
         ? partners.filter(p => String(p.event_id) === String(filterEvent))
         : partners
     ).slice().sort((a, b) =>
         (a.sequence || 0) - (b.sequence || 0) ||
         (a.name || '').localeCompare(b.name || '')
-    );
+    ), [partners, filterEvent]);
+
+    // Slice for the table render. Drag handlers still receive the same
+    // `i` they used to (an index into the displayed list) — and since the
+    // drag-aware sort already keeps the matched ID set, partial rendering
+    // doesn't break reordering.
+    const displayedPartners = filteredPartners.slice(0, visibleCount);
+    const hasMorePartners = visibleCount < filteredPartners.length;
 
     return (
         <div className="animate-in">
@@ -393,7 +433,7 @@ export default function PartnersPage() {
                         </tr>
                     </thead>
                     <tbody>
-                        {filteredPartners.map((p, i) => (
+                        {displayedPartners.map((p, i) => (
                             <tr
                                 key={p.id}
                                 draggable={canManage}
@@ -425,6 +465,8 @@ export default function PartnersPage() {
                                         <img
                                             src={getImageUrl(p.logo_url)}
                                             alt={p.name}
+                                            loading="lazy"
+                                            decoding="async"
                                             style={{
                                                 width: p.logo_width ? `${p.logo_width}px` : 120,
                                                 height: p.logo_height ? `${p.logo_height}px` : 120,
@@ -455,7 +497,7 @@ export default function PartnersPage() {
                                                                 return (
                                                                     <div key={idx} className="d-flex align-items-center gap-3">
                                                                         <div style={{ width: 36, height: 36, borderRadius: 10, overflow: 'hidden', background: 'rgba(139,92,246,0.15)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(255,255,255,0.1)' }}>
-                                                                            {photo ? <img src={getImageUrl(photo)} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#a78bfa' }}>{name.charAt(0)}</span>}
+                                                                            {photo ? <img src={getImageUrl(photo)} alt={name} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#a78bfa' }}>{name.charAt(0)}</span>}
                                                                         </div>
                                                                         <div className="flex-grow-1" style={{ minWidth: 0 }}>
                                                                             <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#fff' }} className="text-truncate">{name}</div>
@@ -491,6 +533,14 @@ export default function PartnersPage() {
                         ))}
                     </tbody>
                 </Table>
+            )}
+            {/* Infinite-scroll sentinel — visible only when there's more to
+                load. The observer above bumps `visibleCount` when this
+                element scrolls into view. */}
+            {hasMorePartners && (
+                <div ref={loadMoreRef} style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                    Loading more partners…
+                </div>
             )}
 
             {/* Partner Modal */}
@@ -646,7 +696,12 @@ export default function PartnersPage() {
                         />
                     </Form.Group>
                 </Modal.Body>
-                <Modal.Footer><Button variant="link" onClick={() => setShow(false)} style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>Cancel</Button><Button className="btn-accent" onClick={handleSave}>Save</Button></Modal.Footer>
+                <Modal.Footer>
+                    <Button variant="link" onClick={() => setShow(false)} style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>Cancel</Button>
+                    <AsyncButton className="btn btn-accent" onClick={handleSave} loadingText={editing ? 'Saving…' : 'Adding…'}>
+                        {editing ? 'Save' : 'Add Partner'}
+                    </AsyncButton>
+                </Modal.Footer>
             </Modal>
             <style>{`
                 .form-control-dark::placeholder {

@@ -142,6 +142,20 @@ const createDatabase = async () => {
                 setting_key VARCHAR(255) PRIMARY KEY,
                 setting_value TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )`,
+            `CREATE TABLE IF NOT EXISTS cert_send_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                tenant_id INT NOT NULL,
+                event_id INT,
+                attendee_id INT,
+                attendee_name VARCHAR(255),
+                attendee_email VARCHAR(255),
+                status ENUM('sent','skipped','failed') NOT NULL,
+                reason VARCHAR(255),
+                sent_by INT,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_event_sent (event_id, sent_at),
+                INDEX idx_tenant_sent (tenant_id, sent_at)
             )`
         ];
 
@@ -172,7 +186,9 @@ const createDatabase = async () => {
             'ALTER TABLE speakers ADD COLUMN panel VARCHAR(255) AFTER topic',
             'ALTER TABLE speakers ADD COLUMN linkedin_url VARCHAR(255) AFTER panel',
             'ALTER TABLE speakers ADD COLUMN created_by INT AFTER linkedin_url',
-            'ALTER TABLE speakers ADD COLUMN location VARCHAR(255) AFTER company'
+            'ALTER TABLE speakers ADD COLUMN location VARCHAR(255) AFTER company',
+            'ALTER TABLE speakers ADD COLUMN attending_card_url VARCHAR(255) DEFAULT NULL',
+            'ALTER TABLE speakers ADD COLUMN attending_card_design JSON DEFAULT NULL'
         ];
 
         for (const q of alterSpeakerQueries) {
@@ -180,7 +196,10 @@ const createDatabase = async () => {
         }
 
         const alterEventQueries = [
-            'ALTER TABLE events ADD COLUMN agenda_export_settings LONGTEXT NULL'
+            'ALTER TABLE events ADD COLUMN agenda_export_settings LONGTEXT NULL',
+            'ALTER TABLE events ADD COLUMN attending_card_template JSON DEFAULT NULL',
+            'ALTER TABLE events ADD COLUMN certificate_email_template JSON DEFAULT NULL',
+            'ALTER TABLE events ADD COLUMN confirmation_email_template JSON DEFAULT NULL'
         ];
 
         for (const q of alterEventQueries) {

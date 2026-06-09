@@ -4,7 +4,7 @@ const db = require('../config/db');
 const { protect } = require('../middleware/authMiddleware');
 const { createUpload, fileUrl } = require('../utils/storage');
 
-const upload = createUpload('tenant-logo');
+const upload = createUpload('tenant-logo', { source: 'tenant' });
 
 // Current tenant — everyone in the tenant can read, only admins can update.
 router.get('/me', protect, async (req, res) => {

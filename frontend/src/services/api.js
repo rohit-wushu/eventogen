@@ -25,6 +25,9 @@ api.interceptors.response.use(response => {
     return Promise.reject(error);
 });
 
+// Social (declared up front; full block lives below)
+export const listSocialPlatforms = () => api.get('/social/platforms');
+
 // Auth
 export const checkEmail = (email) => api.post('/auth/check-email', { email });
 export const loginUser = (email, password) => api.post('/auth/login', { email, password });
@@ -126,6 +129,10 @@ export const updateEvent = (data) => {
     return api.put(`/events/${id}`, data, { headers: { 'Content-Type': 'multipart/form-data' } });
 };
 export const updateEventTemplate = (id, template) => api.put(`/events/${id}/template`, { template });
+// "I am attending" master template — separate column on events so the two
+// card types can have independent layouts.
+export const updateEventAttendingTemplate = (id, template) => api.put(`/events/${id}/attending-template`, { template });
+export const bulkApplyAttendingTemplate = (id) => api.post(`/events/${id}/bulk-apply-attending-template`);
 export const updateAgendaExportSettings = (id, settings) => api.put(`/events/${id}/agenda-export-settings`, { settings });
 export const uploadAgendaExportImage = (id, file) => {
     const fd = new FormData();
@@ -233,6 +240,27 @@ export const saveSNSCard = (id, formData, designMetadata) => {
 };
 export const deleteSNSCard = (id) => api.delete(`/speakers/${id}/sns-card`);
 
+// "I am attending" card — separate persistence so it doesn't overwrite the
+// speaker-announcement card. Same FormData contract as saveSNSCard.
+export const saveAttendingCard = (id, formData, designMetadata) => {
+    if (designMetadata) formData.append('design_metadata', JSON.stringify(designMetadata));
+    return api.post(`/speakers/${id}/save-attending-card`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
+export const deleteAttendingCard = (id) => api.delete(`/speakers/${id}/attending-card`);
+
+// Cutout.pro proxies — single `image` part in, processed binary back.
+// Caller decides what to do with the Blob (preview, re-crop, upload, etc.).
+const postImageOp = (path) => (file) => {
+    const fd = new FormData();
+    fd.append('image', file);
+    return api.post(path, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        responseType: 'blob',
+    });
+};
+export const enhanceImage         = postImageOp('/image/enhance');
+export const removeImageBackground = postImageOp('/image/remove-bg');
+
 // Partners
 export const getPartners = (eventId) => api.get('/partners');
 export const getPartner = (id) => api.get(`/partners/${id}`);
@@ -294,11 +322,19 @@ export const getSpeakerAgendas = (id) => api.get(`/agendas/speaker/${id}`);
 // Users
 export const getUsers = () => api.get('/users');
 export const updateUser = (data) => api.put(`/users/${data.id}`, data);
-export const updateMyProfile = ({ name, photo, removePhoto }) => {
+// `email`, `newPassword`, and `currentPassword` are optional. The backend
+// requires `currentPassword` for both email and password changes — protects
+// against session-hijack scenarios where someone with a live session
+// shouldn't be able to silently reroute the sign-in address or change
+// the password.
+export const updateMyProfile = ({ name, photo, removePhoto, email, currentPassword, newPassword }) => {
     const fd = new FormData();
     if (name) fd.append('name', name);
     if (photo) fd.append('photo', photo);
     if (removePhoto) fd.append('remove_photo', 'true');
+    if (email) fd.append('email', email);
+    if (currentPassword) fd.append('current_password', currentPassword);
+    if (newPassword) fd.append('new_password', newPassword);
     return api.put('/users/me', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
 };
 export const deleteUser = (id) => api.delete(`/users/${id}`);
@@ -311,12 +347,46 @@ export const getAttendees = (eventId, ticketType, status) => {
     if (status) url += `status=${status}&`;
     return api.get(url);
 };
+// Paginated variant — pass `page` and the backend switches to envelope mode
+// returning { rows, total, page, pageSize, status_counts }. Used by
+// AttendeesPage so we don't load 700+ rows at once. Filters object accepts
+// { eventId, ticketType, status, q, page, pageSize }.
+export const getAttendeesPaged = (filters = {}) => {
+    const { eventId, ticketType, status, q, page = 1, pageSize = 50 } = filters;
+    const params = { page, pageSize };
+    if (eventId)    params.event_id    = eventId;
+    if (ticketType) params.ticket_type = ticketType;
+    if (status)     params.status      = status;
+    if (q)          params.q           = q;
+    return api.get('/attendees', { params });
+};
 export const getAttendee = (id) => api.get(`/attendees/${id}`);
 export const createAttendee = (data) => api.post('/attendees', data);
 export const updateAttendee = (data) => api.put(`/attendees/${data.id}`, data);
 export const deleteAttendee = (id) => api.delete(`/attendees/${id}`);
 export const sendAttendeeConfirmation = (id) => api.post(`/attendees/${id}/send-confirmation`);
 export const previewAttendeeConfirmation = (id) => api.get(`/attendees/${id}/email-preview`);
+
+// Send a generated certificate PNG to an attendee. `pngBlob` is whatever
+// the canvas-renderer produced (BulkCertificatePage). Backend resolves the
+// per-event email template and attaches the PNG.
+export const sendAttendeeCertificate = (id, pngBlob, filename = 'certificate.png') => {
+    const fd = new FormData();
+    fd.append('certificate', pngBlob, filename);
+    return api.post(`/attendees/${id}/send-certificate`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
+
+// Per-event certificate email template (subject + body). Null payload =
+// the operator hasn't customised yet, caller falls back to default.
+export const getEventCertificateEmailTemplate    = (eventId) => api.get(`/events/${eventId}/certificate-email-template`);
+export const updateEventCertificateEmailTemplate = (eventId, template) => api.put(`/events/${eventId}/certificate-email-template`, { template });
+
+// Audit log of past "Send via Email" attempts for a single event. Optional
+// `filters` may carry { from, to, status, q, limit } — backend returns
+// { rows, counts, daily } so the history page renders chart + table from
+// one request.
+export const getCertificateSendLog = (eventId, filters = {}) =>
+    api.get(`/events/${eventId}/certificate-send-log`, { params: filters });
 
 // On-site check-in. Returns 200 in all three semantic cases —
 // { status: 'success' | 'already' | 'invalid', ... } — so the scanner UI
@@ -329,10 +399,27 @@ export const getAttendeeReports = (eventId) =>
 
 // Confirmation email template — admin/manager can edit the wording, brand
 // colour, which detail rows show, and send a test to themselves.
-export const getAttendeeEmailTemplate = () => api.get('/attendees/email-template');
-export const saveAttendeeEmailTemplate = (template) => api.put('/attendees/email-template', { template });
-export const resetAttendeeEmailTemplate = () => api.put('/attendees/email-template', { template: null });
-export const testAttendeeEmailTemplate = (template, to) => api.post('/attendees/email-template/test', { template, to });
+// `eventId` is optional. When omitted, all four hit the tenant-wide
+// default template. When passed, they target that event's override:
+// GET seeds the editor with the event override (or tenant default as a
+// starting point), PUT/test/reset all scope to that event row.
+export const getAttendeeEmailTemplate = (eventId) =>
+    api.get('/attendees/email-template', { params: eventId ? { event_id: eventId } : {} });
+export const saveAttendeeEmailTemplate = (template, eventId) =>
+    api.put('/attendees/email-template', { template }, { params: eventId ? { event_id: eventId } : {} });
+export const resetAttendeeEmailTemplate = (eventId) =>
+    api.put('/attendees/email-template', { template: null }, { params: eventId ? { event_id: eventId } : {} });
+export const testAttendeeEmailTemplate = (template, to, eventId) =>
+    api.post('/attendees/email-template/test', { template, to, event_id: eventId || undefined });
+// Upload a banner image used at the top of the confirmation email.
+// Returns { url } that the caller drops into template.header_image_url.
+export const uploadAttendeeEmailHeader = (file) => {
+    const fd = new FormData();
+    fd.append('image', file);
+    return api.post('/attendees/email-template/header-image', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+};
 export const getAttendeeStats = () => api.get('/attendees/stats/summary');
 export const exportAttendees = (eventId) => api.get(`/attendees/export?t=${Date.now()}${eventId ? `&event_id=${eventId}` : ''}`, { responseType: 'blob' });
 export const importAttendees = (formData, eventId) => api.post(`/attendees/import${eventId ? `?event_id=${eventId}` : ''}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
@@ -418,5 +505,12 @@ export const removeGroupMember = (id, userId) => api.delete(`/chat/groups/${id}/
 export const deleteChatMessage = (id, scope) => api.delete(`/chat/messages/${id}?scope=${scope}`);
 export const reactToMessage = (id, emoji) => api.post(`/chat/messages/${id}/react`, { emoji });
 export const forwardMessage = (id, targets) => api.post(`/chat/messages/${id}/forward`, { targets });
+
+// Social publishing (per-tenant). Phase 1: connect/disconnect + create post.
+export const listSocialAccounts = () => api.get('/social/accounts');
+export const startSocialConnect = (platform) => api.post(`/social/connect/${platform}/start`);
+export const disconnectSocialAccount = (id) => api.delete(`/social/accounts/${id}`);
+export const createSocialPost = (payload) => api.post('/social/posts', payload);
+export const listSocialPosts = () => api.get('/social/posts');
 
 export default api;

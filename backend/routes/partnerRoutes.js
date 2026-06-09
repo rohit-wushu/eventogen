@@ -10,7 +10,7 @@ const guard = [protect, requireSection('partners')];
 const { notifyAdminsAndManagers } = require('../utils/notify');
 const { createUpload, fileUrl } = require('../utils/storage');
 
-const upload = createUpload('partner');
+const upload = createUpload('partner', { source: 'partners' });
 
 // Multi-event aware access. The local `employeeAllowed` shim adds the
 // per-event 'partners' section check on top of basic event assignment.

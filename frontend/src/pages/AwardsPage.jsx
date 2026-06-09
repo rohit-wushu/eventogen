@@ -8,6 +8,7 @@ import {
 } from '../services/api';
 import { BsPlus, BsPencil, BsTrash, BsTrophy, BsTags, BsPerson, BsBuilding, BsImage, BsGlobe } from 'react-icons/bs';
 import { getImageUrl } from '../utils/imageUrl';
+import AsyncButton from '../components/AsyncButton';
 
 const emptyForm = {
     recipient_name: '',
@@ -410,9 +411,9 @@ export default function AwardsPage() {
                     <Button variant="link" onClick={() => setShow(false)} style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>
                         Cancel
                     </Button>
-                    <Button className="btn-accent" onClick={handleSave}>
-                        Save
-                    </Button>
+                    <AsyncButton className="btn btn-accent" onClick={handleSave} loadingText={editing ? 'Saving…' : 'Adding…'}>
+                        {editing ? 'Save' : 'Add Award'}
+                    </AsyncButton>
                 </Modal.Footer>
             </Modal>
         </div>

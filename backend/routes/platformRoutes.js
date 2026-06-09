@@ -343,13 +343,23 @@ router.get('/invoices', async (req, res) => {
 // endpoint but includes non-public ones and allows mutation.
 router.get('/plans', async (req, res) => {
     try {
+        // Tolerate older deployments where max_storage_mb hasn't been migrated in.
+        const [hasStorage] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_storage_mb'`
+        );
+        const storageCol = hasStorage.length > 0 ? ', max_storage_mb' : '';
+
         const [plans] = await db.query(
             `SELECT id, code, name, price_inr, billing_cycle, max_events, max_speakers,
-                    max_attendees, max_users, features, is_public, created_at
+                    max_attendees, max_users${storageCol}, features, is_public, created_at
              FROM plans ORDER BY price_inr ASC`
         );
         const parsed = plans.map(p => ({
             ...p,
+            // Default to 0 (unlimited) when the column doesn't exist so the UI
+            // doesn't crash trying to read undefined.
+            max_storage_mb: p.max_storage_mb ?? 0,
             features: typeof p.features === 'string' ? JSON.parse(p.features) : (p.features || [])
         }));
         res.json(parsed);
@@ -572,8 +582,18 @@ router.delete('/plans/:id', async (req, res) => {
 
 router.put('/plans/:id', async (req, res) => {
     const id = Number(req.params.id);
-    const { name, price_inr, max_events, max_speakers, max_attendees, max_users, features, is_public } = req.body || {};
+    const { name, price_inr, max_events, max_speakers, max_attendees, max_users, max_storage_mb, features, is_public } = req.body || {};
     try {
+        // Tolerate older deployments where max_storage_mb hasn't been migrated in.
+        const [hasStorage] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_storage_mb'`
+        );
+        const storageCol = hasStorage.length > 0
+            ? 'max_storage_mb = COALESCE(?, max_storage_mb),'
+            : '';
+        const storageParam = hasStorage.length > 0 ? [max_storage_mb ?? null] : [];
+
         await db.query(
             `UPDATE plans SET
                 name = COALESCE(?, name),
@@ -582,6 +602,7 @@ router.put('/plans/:id', async (req, res) => {
                 max_speakers = COALESCE(?, max_speakers),
                 max_attendees = COALESCE(?, max_attendees),
                 max_users = COALESCE(?, max_users),
+                ${storageCol}
                 features = COALESCE(?, features),
                 is_public = COALESCE(?, is_public)
              WHERE id = ?`,
@@ -592,6 +613,7 @@ router.put('/plans/:id', async (req, res) => {
                 max_speakers ?? null,
                 max_attendees ?? null,
                 max_users ?? null,
+                ...storageParam,
                 features != null ? JSON.stringify(features) : null,
                 is_public != null ? (is_public ? 1 : 0) : null,
                 id

@@ -10,7 +10,7 @@ const { assignedIdsOf, assignedIdsForSql } = require('../utils/eventAccess');
 // the top so setUserEvents() — defined immediately below — can reference it.
 const { SECTIONS } = require('../middleware/permissions');
 
-const userPhotoUpload = createUpload((req) => `user-${req.user.id}`);
+const userPhotoUpload = createUpload((req) => `user-${req.user.id}`, { source: 'users' });
 
 // Replace a user's event assignments in the junction table and keep
 // `assigned_event_id` pointing at the first one (the "primary") for
@@ -79,19 +79,91 @@ const attachEventIds = async (rows, tenantId) => {
 
 // Update own profile (name / photo)
 router.put('/me', protect, userPhotoUpload.single('photo'), async (req, res) => {
-    const { name, remove_photo } = req.body;
+    const { name, remove_photo, email, current_password, new_password } = req.body;
     try {
         const sets = [];
         const params = [];
         if (typeof name === 'string' && name.trim()) { sets.push('name=?'); params.push(name.trim()); }
         if (req.file) { sets.push('profile_photo_url=?'); params.push(fileUrl(req.file)); }
         else if (remove_photo === 'true' || remove_photo === '1') { sets.push('profile_photo_url=NULL'); }
+
+        // `req.tenantId` is null for super admins (they aren't tied to a
+        // tenant). MySQL `tenant_id=NULL` is UNKNOWN, not TRUE, so we use
+        // the NULL-safe `<=>` operator throughout — that way the same code
+        // works for both tenant users and super admins.
+        const meRow = async () => {
+            const [[r]] = await db.query(
+                'SELECT email, password FROM users WHERE id=? AND tenant_id<=>?',
+                [req.user.id, req.tenantId ?? null]
+            );
+            return r;
+        };
+
+        // Both email- and password-change need the current password
+        // verified, so we load + compare once up front when either is
+        // requested. Cheaper than two round-trips when both are sent.
+        const wantsEmailChange = !!(email || '').trim();
+        const wantsPasswordChange = !!(new_password || '').trim();
+        let me = null;
+        if (wantsEmailChange || wantsPasswordChange) {
+            me = await meRow();
+            if (!me) return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Self-email change: requires current password + format + tenant-
+        // wide uniqueness. For super admins the invitation collision check
+        // is skipped (their tenant is NULL — invitations are tenant-scoped
+        // so there's nothing to collide with).
+        const incomingEmail = (email || '').trim().toLowerCase();
+        if (incomingEmail) {
+            const currentEmail = (me.email || '').trim().toLowerCase();
+            if (incomingEmail !== currentEmail) {
+                if (!current_password) {
+                    return res.status(400).json({ error: 'Enter your current password to change your email.' });
+                }
+                const ok = await bcrypt.compare(current_password, me.password || '');
+                if (!ok) return res.status(403).json({ error: 'Current password is incorrect.' });
+                if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(incomingEmail)) {
+                    return res.status(400).json({ error: 'Please enter a valid email address.' });
+                }
+                const [[clash]] = await db.query(
+                    'SELECT id FROM users WHERE LOWER(email)=? AND id<>? LIMIT 1',
+                    [incomingEmail, req.user.id]
+                );
+                if (clash) return res.status(409).json({ error: 'That email is already in use by another user.' });
+                if (req.tenantId) {
+                    const [[inviteClash]] = await db.query(
+                        'SELECT id FROM invitations WHERE LOWER(email)=? AND tenant_id=? LIMIT 1',
+                        [incomingEmail, req.tenantId]
+                    );
+                    if (inviteClash) return res.status(409).json({ error: 'That email is currently being used for a pending invitation.' });
+                }
+                sets.push('email=?'); params.push(incomingEmail);
+            }
+        }
+
+        // Self-password change: same current-password gate as email,
+        // plus a minimum length so the operator can't downgrade to a
+        // weaker secret.
+        if (wantsPasswordChange) {
+            if (!current_password) {
+                return res.status(400).json({ error: 'Enter your current password to change your password.' });
+            }
+            const ok = await bcrypt.compare(current_password, me.password || '');
+            if (!ok) return res.status(403).json({ error: 'Current password is incorrect.' });
+            if (String(new_password).length < 6) {
+                return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+            }
+            const hashed = await bcrypt.hash(String(new_password), 10);
+            sets.push('password=?'); params.push(hashed);
+        }
+
         if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
-        params.push(req.user.id, req.tenantId);
-        await db.query(`UPDATE users SET ${sets.join(', ')} WHERE id=? AND tenant_id=?`, params);
+        params.push(req.user.id, req.tenantId ?? null);
+        await db.query(`UPDATE users SET ${sets.join(', ')} WHERE id=? AND tenant_id<=>?`, params);
         const [rows] = await db.query(
-            'SELECT id, name, email, role, assigned_event_id, assigned_task, profile_photo_url FROM users WHERE id=? AND tenant_id=?',
-            [req.user.id, req.tenantId]
+            'SELECT id, name, email, role, assigned_event_id, assigned_task, profile_photo_url, is_super_admin FROM users WHERE id=? AND tenant_id<=>?',
+            [req.user.id, req.tenantId ?? null]
         );
         res.json(rows[0]);
     } catch (err) {
@@ -149,6 +221,47 @@ router.put('/:id', protect, async (req, res) => {
     try {
         if (req.user.role === 'employee') return res.status(403).json({ error: 'Access denied' });
 
+        // Look up the existing row up front so we can detect actual email
+        // changes (and let through no-op PUTs that just re-send the same
+        // address). 404 if the user doesn't exist within this tenant.
+        const [[existing]] = await db.query(
+            'SELECT id, email, role FROM users WHERE id = ? AND tenant_id = ?',
+            [req.params.id, req.tenantId]
+        );
+        if (!existing) return res.status(404).json({ error: 'User not found' });
+
+        // Email change guardrails — only validate when the incoming email
+        // actually differs from what's on the row. Managers cannot rotate
+        // sign-in addresses; only admins can. Format + uniqueness are
+        // checked here so the operator sees a clean message instead of a
+        // raw MySQL UNIQUE constraint failure.
+        const incomingEmail = (email || '').trim().toLowerCase();
+        const currentEmail = (existing.email || '').trim().toLowerCase();
+        const emailChanged = incomingEmail && incomingEmail !== currentEmail;
+        if (emailChanged) {
+            if (req.user.role !== 'admin') {
+                return res.status(403).json({ error: 'Only admins can change a user\'s email address.' });
+            }
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(incomingEmail)) {
+                return res.status(400).json({ error: 'Please enter a valid email address.' });
+            }
+            // Uniqueness check — emails are tenant-wide unique (the column
+            // has a UNIQUE constraint). The lower() compare matches MySQL's
+            // default case-insensitive collation; cheap insurance.
+            const [[clash]] = await db.query(
+                'SELECT id FROM users WHERE LOWER(email) = ? AND id <> ? LIMIT 1',
+                [incomingEmail, req.params.id]
+            );
+            if (clash) return res.status(409).json({ error: 'That email is already in use by another user.' });
+            // Also clash if a pending invitation is holding the address.
+            const [[inviteClash]] = await db.query(
+                'SELECT id FROM invitations WHERE LOWER(email) = ? AND tenant_id = ? LIMIT 1',
+                [incomingEmail, req.tenantId]
+            );
+            if (inviteClash) return res.status(409).json({ error: 'That email is currently being used for a pending invitation.' });
+        }
+        const persistedEmail = emailChanged ? incomingEmail : existing.email;
+
         // Accept either the new `event_ids` array (multi-event) or the legacy
         // single `event_id`. Normalize to a deduped numeric array.
         const requestedEventIds = Array.isArray(event_ids)
@@ -159,7 +272,7 @@ router.put('/:id', protect, async (req, res) => {
         // Core user fields. `assigned_event_id` (primary) is set here; the
         // full set is written to user_events below.
         let query = 'UPDATE users SET name=?, email=?, role=?, assigned_event_id=?, assigned_task=?';
-        let params = [name, email, role, primaryEventId, assigned_task || null];
+        let params = [name, persistedEmail, role, primaryEventId, assigned_task || null];
 
         if (password) {
             const salt = await bcrypt.genSalt(10);

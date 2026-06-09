@@ -3,7 +3,8 @@ import { Form, Button, Alert, Image, Spinner, Modal } from 'react-bootstrap';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { createSpeaker, getSpeaker, updateSpeaker, getEvents } from '../services/api';
-import { BsArrowLeft, BsCloudUpload, BsShare, BsCrop } from 'react-icons/bs';
+import { usePhotoOps } from '../hooks/usePhotoOps';
+import { BsArrowLeft, BsCloudUpload, BsShare, BsCrop, BsStars, BsScissors } from 'react-icons/bs';
 import Cropper from 'react-cropper';
 import 'cropperjs/dist/cropper.css';
 
@@ -154,6 +155,23 @@ export default function SpeakerFormPage() {
         }
     };
 
+    // Photo ops (Enhance / Remove BG). Source priority: in-progress crop
+    // (modal open) > cropped file > preview URL — so the buttons always
+    // operate on what the user is currently looking at. Result re-opens
+    // the cropper so the user can re-frame.
+    const { photoOp, error: photoOpError, runEnhance: handleEnhancePhoto, runRemoveBg: handleRemoveBackground } = usePhotoOps({
+        getSource: () => cropSrc || file || preview || null,
+        onResult: (blob, opName) => {
+            const suffix = opName === 'enhance' ? 'enhanced' : 'nobg';
+            const baseName = (cropOrigName.replace(/\.[^.]+$/, '') || 'photo') + `-${suffix}.png`;
+            loadFileForCrop(new File([blob], baseName, { type: blob.type || 'image/png' }));
+        },
+    });
+    // Show photo-op error inside the modal if it's open, otherwise on the
+    // upload row — same surface the user is currently looking at.
+    const cropOpError = cropSrc ? photoOpError : '';
+    const surfacedUrlError = !cropSrc && photoOpError ? photoOpError : urlError;
+
     const handleCropConfirm = () => {
         const cropper = cropperRef.current?.cropper;
         if (!cropper) return;
@@ -202,6 +220,9 @@ export default function SpeakerFormPage() {
                 await updateSpeaker(formData);
             } else {
                 await createSpeaker(formData);
+                // Bust the dashboard / Add Speaker quota cache so the badge
+                // reflects the new row right after navigating back.
+                try { (await import('../hooks/useQuota')).invalidateQuota(); } catch {}
             }
             navigate('/speakers');
         } catch (err) {
@@ -275,9 +296,9 @@ export default function SpeakerFormPage() {
                                 {urlLoading ? <Spinner size="sm" /> : 'Load'}
                             </Button>
                         </div>
-                        {urlError && (
+                        {surfacedUrlError && (
                             <div className="text-danger small mt-2" style={{ maxWidth: 420, marginInline: 'auto' }}>
-                                {urlError}
+                                {surfacedUrlError}
                             </div>
                         )}
                     </div>
@@ -425,7 +446,9 @@ export default function SpeakerFormPage() {
                 </Form>
             </div>
 
-            <Modal show={!!cropSrc} onHide={handleCropCancel} centered size="lg" contentClassName="bg-dark text-white">
+            {/* backdrop="static" + keyboard={false} so accidental outside
+                clicks / Esc don't wipe an in-progress crop or enhance op. */}
+            <Modal show={!!cropSrc} onHide={handleCropCancel} centered size="lg" contentClassName="bg-dark text-white" backdrop="static" keyboard={false}>
                 <Modal.Header closeButton closeVariant="white">
                     <Modal.Title className="d-flex align-items-center gap-2">
                         <BsCrop /> Crop photo to 400 × 400
@@ -450,10 +473,40 @@ export default function SpeakerFormPage() {
                             guides={true}
                         />
                     )}
+                    {cropOpError && (
+                        <div className="text-danger small mt-2">{cropOpError}</div>
+                    )}
                 </Modal.Body>
-                <Modal.Footer>
-                    <Button variant="secondary" onClick={handleCropCancel}>Cancel</Button>
-                    <Button variant="primary" onClick={handleCropConfirm}>Use this crop</Button>
+                <Modal.Footer className="d-flex justify-content-between">
+                    {/* Cutout.pro photo ops — operate on the image currently in
+                        the cropper. Result is re-loaded into the same cropper
+                        so the user can re-frame. */}
+                    <div className="d-flex gap-2">
+                        <Button
+                            size="sm"
+                            variant="outline-light"
+                            onClick={handleEnhancePhoto}
+                            disabled={!!photoOp}
+                            title="Auto-enhance the current photo (sharpen + upscale)."
+                            style={{ borderColor: 'rgba(139,92,246,0.55)', color: '#a78bfa' }}
+                        >
+                            {photoOp === 'enhance' ? <Spinner size="sm" /> : <BsStars />} {photoOp === 'enhance' ? ' Enhancing…' : ' Enhance'}
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="outline-light"
+                            onClick={handleRemoveBackground}
+                            disabled={!!photoOp}
+                            title="Remove background. Returns a transparent PNG."
+                            style={{ borderColor: 'rgba(19,217,153,0.55)', color: '#13d999' }}
+                        >
+                            {photoOp === 'remove-bg' ? <Spinner size="sm" /> : <BsScissors />} {photoOp === 'remove-bg' ? ' Removing…' : ' Remove BG'}
+                        </Button>
+                    </div>
+                    <div className="d-flex gap-2">
+                        <Button variant="secondary" onClick={handleCropCancel} disabled={!!photoOp}>Cancel</Button>
+                        <Button variant="primary" onClick={handleCropConfirm} disabled={!!photoOp}>Use this crop</Button>
+                    </div>
                 </Modal.Footer>
             </Modal>
 

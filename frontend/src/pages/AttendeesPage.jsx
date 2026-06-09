@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Table, Button, Modal, Form, Alert, Row, Col, Badge, Spinner } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import { BsPlus, BsPencil, BsTrash, BsPeopleFill, BsFunnel, BsPersonCheck, BsPersonX, BsPersonBadge, BsTelephone, BsEnvelope, BsBuilding, BsUpload, BsDownload, BsEnvelopePaperFill, BsCheckCircleFill, BsExclamationTriangleFill, BsSendFill, BsPhone, BsTablet, BsDisplay, BsPerson, BsBriefcase, BsCalendarEvent, BsTicketPerforated, BsBookmarkStar, BsJournalText, BsCameraVideo, BsQrCode, BsBarChartFill, BsChevronUp } from 'react-icons/bs';
 import { Bar, Doughnut } from 'react-chartjs-2';
 import QRCode from 'qrcode';
 import { toPng } from 'html-to-image';
-import { getAttendees, createAttendee, updateAttendee, deleteAttendee, getEvents, exportAttendees, importAttendees, sendAttendeeConfirmation, previewAttendeeConfirmation, getAttendeeReports } from '../services/api';
+import { getAttendees, getAttendeesPaged, createAttendee, updateAttendee, deleteAttendee, getEvents, exportAttendees, importAttendees, sendAttendeeConfirmation, previewAttendeeConfirmation, getAttendeeReports } from '../services/api';
+import AsyncButton from '../components/AsyncButton';
 
 const STATUS_COLORS = {
     registered: { bg: 'rgba(59,130,246,0.12)', color: '#60a5fa', border: 'rgba(59,130,246,0.25)' },
@@ -24,6 +25,52 @@ const TICKET_COLORS = {
     gov: { bg: 'rgba(99,102,241,0.12)', color: '#818cf8', border: 'rgba(99,102,241,0.25)' },
     'non-gov': { bg: 'rgba(107,114,128,0.12)', color: '#9ca3af', border: 'rgba(107,114,128,0.25)' },
 };
+
+// One placeholder "block" — animated shimmer bar used inside skeleton rows.
+// Uses the classic 800px-translate gradient pattern (Facebook / LinkedIn
+// shimmer); much more visually obvious than the percentage-based one and
+// works on any background.
+const Shimmer = ({ width = '100%', height = 12 }) => (
+    <span className="attendees-shimmer" style={{
+        display: 'inline-block',
+        width, height,
+        borderRadius: 6,
+        verticalAlign: 'middle',
+    }} />
+);
+
+// One skeleton placeholder row — same column layout as the real one so
+// the page doesn't reflow when data arrives. Vary widths a touch with the
+// `seed` so a tall stack of these reads as a table, not a barcode.
+function SkeletonRow({ canManage, seed }) {
+    const widths = [
+        [80, 60],   // name + designation
+        [140, 100], // email + phone
+        [70],       // company
+        [60],       // ticket
+        [70],       // status
+        [120],      // event
+    ];
+    const jitter = (base) => Math.max(40, base - (seed % 24));
+    return (
+        <tr>
+            <td className="mob-hide"><Shimmer width={20} height={10} /></td>
+            <td data-label="Name">
+                <div><Shimmer width={jitter(widths[0][0])} height={13} /></div>
+                <div style={{ marginTop: 5 }}><Shimmer width={jitter(widths[0][1])} height={9} /></div>
+            </td>
+            <td data-label="Contact">
+                <div><Shimmer width={jitter(widths[1][0])} height={10} /></div>
+                <div style={{ marginTop: 5 }}><Shimmer width={jitter(widths[1][1])} height={10} /></div>
+            </td>
+            <td data-label="Company"><Shimmer width={jitter(widths[2][0])} height={11} /></td>
+            <td data-label="Ticket"><Shimmer width={widths[3][0]} height={16} /></td>
+            <td data-label="Status"><Shimmer width={widths[4][0]} height={16} /></td>
+            <td data-label="Event"><Shimmer width={jitter(widths[5][0])} height={11} /></td>
+            {canManage && <td><Shimmer width={60} height={20} /></td>}
+        </tr>
+    );
+}
 
 // Compact "checked in at" formatter. Shows relative time for recent scans
 // ("2m ago", "1h ago") and a full date/time for anything older so a row
@@ -47,7 +94,10 @@ export default function AttendeesPage() {
     const [show, setShow] = useState(false);
     const [editing, setEditing] = useState(null);
     const [error, setError] = useState('');
-    const [filterEvent, setFilterEvent] = useState('');
+    // Initial event filter can come from `?event=<id>` so links from
+    // the email template page (or anywhere else) can pre-scope this list.
+    const [searchParams] = useSearchParams();
+    const [filterEvent, setFilterEvent] = useState(searchParams.get('event') || '');
     const [filterStatus, setFilterStatus] = useState('');
     const [filterTicket, setFilterTicket] = useState('');
     const [form, setForm] = useState({
@@ -95,17 +145,135 @@ export default function AttendeesPage() {
 
     const canManage = ['admin', 'manager'].includes(user?.role) || (user?.role === 'employee' && !!user?.assigned_event_id);
 
+    // `loading` drives the skeleton table; we set it true on every load
+    // (including refilters / page changes) so the user sees something
+    // animated instead of stale data while the slow query runs.
+    const [loading, setLoading] = useState(true);
+    // Pagination state. We query `pageSize` rows at a time and the backend
+    // returns total + status_counts so the stat cards stay accurate
+    // without us loading the full set.
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(50);
+    const [total, setTotal] = useState(0);
+    const [statusCounts, setStatusCounts] = useState({ all: 0, confirmed: 0, checked_in: 0, cancelled: 0, registered: 0 });
+    // Free-text search — debounced 300ms so each keystroke doesn't hit
+    // the backend. Empty string = no search filter.
+    const [search, setSearch] = useState('');
+    const [searchDebounced, setSearchDebounced] = useState('');
+    useEffect(() => {
+        const t = setTimeout(() => setSearchDebounced(search), 300);
+        return () => clearTimeout(t);
+    }, [search]);
+
     const load = () => {
-        getAttendees(filterEvent || undefined, filterTicket || undefined, filterStatus || undefined)
-            .then(r => setAttendees(Array.isArray(r.data) ? r.data : []))
-            .catch(() => { });
+        setLoading(true);
+        getAttendeesPaged({
+            eventId:    filterEvent || undefined,
+            ticketType: filterTicket || undefined,
+            status:     filterStatus || undefined,
+            q:          searchDebounced || undefined,
+            page, pageSize,
+        })
+            .then(r => {
+                const data = r.data || {};
+                setAttendees(Array.isArray(data.rows) ? data.rows : []);
+                setTotal(Number(data.total || 0));
+                if (data.status_counts) setStatusCounts(data.status_counts);
+            })
+            .catch(() => { })
+            .finally(() => setLoading(false));
     };
 
     useEffect(() => {
         getEvents().then(r => setEvents(Array.isArray(r.data) ? r.data : [])).catch(() => { });
     }, []);
 
-    useEffect(() => { load(); }, [filterEvent, filterTicket, filterStatus]);
+    // Filter / search / page changes all hit the API. Resetting `page` to 1
+    // on filter/search change happens in the filter setters below — that
+    // way the user doesn't get stuck on page 14 of a single-page result.
+    useEffect(() => { load(); }, [filterEvent, filterTicket, filterStatus, searchDebounced, page, pageSize]);
+    // Filter / search change → jump back to page 1 (so a list of 700 with
+    // status=confirmed → 12 results doesn't show page 14 of nothing).
+    useEffect(() => { setPage(1); }, [filterEvent, filterTicket, filterStatus, searchDebounced]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    // Bulk confirmation send — applies to whatever filter is active. We
+    // fetch ALL matching attendees (legacy bare-array endpoint, ignoring
+    // pagination) so the operator doesn't have to step through pages to
+    // mail everyone. Each send hits the existing per-attendee endpoint
+    // which enforces scope, template lookup, and SMTP-skip handling.
+    const [bulkSending, setBulkSending] = useState(false);
+    const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0, sent: 0, skipped: 0, failed: 0 });
+    const bulkCancelRef = useRef(false);
+
+    const handleBulkSendConfirmations = async () => {
+        if (bulkSending) return;
+        // Pull the full filtered list, bypassing pagination.
+        let allFiltered;
+        try {
+            const r = await getAttendees(filterEvent || undefined, filterTicket || undefined, filterStatus || undefined);
+            allFiltered = Array.isArray(r.data) ? r.data : [];
+        } catch (err) {
+            setToast({ type: 'danger', text: 'Failed to load delegates for bulk send.' });
+            return;
+        }
+        // Optional client-side search filter — backend doesn't filter
+        // by `q` in legacy mode, so we apply it here for consistency.
+        const term = (searchDebounced || '').toLowerCase().trim();
+        if (term) {
+            allFiltered = allFiltered.filter(a =>
+                (a.name || '').toLowerCase().includes(term) ||
+                (a.email || '').toLowerCase().includes(term) ||
+                (a.company || '').toLowerCase().includes(term)
+            );
+        }
+        const withEmail = allFiltered.filter(a => !!a.email);
+        const skippedNoEmail = allFiltered.length - withEmail.length;
+        if (!allFiltered.length) {
+            setToast({ type: 'danger', text: 'No delegates match the current filter.' });
+            return;
+        }
+        if (!withEmail.length) {
+            setToast({ type: 'danger', text: 'None of the matched delegates have an email on file.' });
+            return;
+        }
+        const msg = `Send the confirmation email to ${withEmail.length} delegate${withEmail.length === 1 ? '' : 's'}` +
+            (skippedNoEmail ? ` (skipping ${skippedNoEmail} with no email)` : '') +
+            `?\n\nUses the template assigned to each delegate's event (event override if set, otherwise the tenant default).`;
+        if (!window.confirm(msg)) return;
+
+        bulkCancelRef.current = false;
+        setBulkSending(true);
+        let sent = 0, failed = 0, skipped = skippedNoEmail;
+        setBulkProgress({ done: 0, total: withEmail.length, sent: 0, skipped, failed: 0 });
+
+        for (let i = 0; i < withEmail.length; i++) {
+            if (bulkCancelRef.current) break;
+            const a = withEmail[i];
+            try {
+                const r = await sendAttendeeConfirmation(a.id);
+                if (r.data?.skipped) {
+                    skipped += 1;
+                } else if (r.data?.sent) {
+                    sent += 1;
+                } else {
+                    failed += 1;
+                }
+            } catch (err) {
+                failed += 1;
+            }
+            setBulkProgress({ done: i + 1, total: withEmail.length, sent, skipped, failed });
+        }
+
+        const parts = [`${sent} sent`];
+        if (skipped) parts.push(`${skipped} skipped`);
+        if (failed) parts.push(`${failed} failed`);
+        if (bulkCancelRef.current) parts.unshift('Cancelled —');
+        setToast({ type: failed ? 'danger' : 'success', text: parts.join(', ') + '.' });
+        setBulkSending(false);
+        bulkCancelRef.current = false;
+    };
 
     // Lazy-load reports the first time the panel opens, refresh whenever the
     // attendees list reloads (so check-ins propagate to the charts), and
@@ -257,15 +425,17 @@ export default function AttendeesPage() {
         e.target.value = '';
     };
 
-    // Filtered attendees
+    // Filtered attendees — already filtered + paginated by the server.
     let filtered = attendees;
 
-    // Stats
+    // Stats come from the server's status_counts (ignores the active
+    // status filter so the cards always show the real totals — letting
+    // the operator switch between filters from the cards themselves).
     const stats = {
-        total: attendees.length,
-        confirmed: attendees.filter(a => a.status === 'confirmed').length,
-        checked_in: attendees.filter(a => a.status === 'checked_in').length,
-        cancelled: attendees.filter(a => a.status === 'cancelled').length,
+        total:      statusCounts.all,
+        confirmed:  statusCounts.confirmed,
+        checked_in: statusCounts.checked_in,
+        cancelled:  statusCounts.cancelled,
     };
 
     // Clicking a stat card filters the table to that status. Click again
@@ -314,34 +484,138 @@ export default function AttendeesPage() {
 
     return (
         <div className="animate-in">
-            <div className="page-header d-flex justify-content-between align-items-center">
+            {/* Shimmer styles + keyframe — the 800px translate pattern is
+                forgiving (works under any backdrop) and visibly animates
+                regardless of the element's actual width. */}
+            <style>{`
+                @keyframes attendees-shimmer-kf {
+                    0%   { background-position: -468px 0; }
+                    100% { background-position:  468px 0; }
+                }
+                .attendees-shimmer {
+                    background: rgba(255,255,255,0.06);
+                    background-image: linear-gradient(
+                        90deg,
+                        rgba(255,255,255,0.04) 0%,
+                        rgba(255,255,255,0.18) 50%,
+                        rgba(255,255,255,0.04) 100%
+                    );
+                    background-repeat: no-repeat;
+                    background-size: 468px 100%;
+                    animation: attendees-shimmer-kf 1.2s linear infinite;
+                }
+                /* Shared geometry for every button in the page header.
+                   Same height, padding, font size, gap, and (crucially)
+                   nowrap so long labels don't bump one button taller
+                   than its neighbours. */
+                .attendees-header-toolbar .attendees-header-btn {
+                    height: 38px;
+                    padding: 0 14px;
+                    font-size: 0.82rem;
+                    font-weight: 600;
+                    border-radius: 10px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                    white-space: nowrap;
+                    line-height: 1;
+                    border: 1px solid var(--border-subtle);
+                    transition: background 0.15s, border-color 0.15s, color 0.15s;
+                }
+                .attendees-header-toolbar .attendees-header-btn svg {
+                    flex-shrink: 0;
+                }
+                /* Intent colours — only the border + text colour change.
+                   Geometry stays identical via the base class above. */
+                .attendees-header-toolbar .attendees-header-btn-violet {
+                    border-color: rgba(139,92,246,0.45);
+                    color: #a78bfa;
+                }
+                .attendees-header-toolbar .attendees-header-btn-violet.is-active {
+                    background: rgba(139,92,246,0.12);
+                }
+                .attendees-header-toolbar .attendees-header-btn-emerald {
+                    border-color: rgba(16,185,129,0.45);
+                    color: #10b981;
+                }
+                .attendees-header-toolbar .attendees-header-btn-danger {
+                    border-color: rgba(239,68,68,0.45);
+                    color: #ef4444;
+                }
+                /* Filled accent button — purple→pink gradient. !important
+                   beats Bootstrap's default Button background. */
+                .attendees-header-toolbar .attendees-header-btn-accent,
+                .attendees-header-toolbar .attendees-header-btn-primary {
+                    color: #fff !important;
+                    border: none !important;
+                    background: linear-gradient(135deg, #8b5cf6, #ec4899) !important;
+                    box-shadow: 0 6px 16px -10px rgba(139,92,246,0.7);
+                }
+                .attendees-header-toolbar .attendees-header-btn-accent:hover:not(:disabled),
+                .attendees-header-toolbar .attendees-header-btn-primary:hover {
+                    filter: brightness(1.05);
+                }
+                .attendees-header-toolbar .attendees-header-btn-accent:disabled {
+                    opacity: 0.55;
+                    cursor: not-allowed;
+                }
+            `}</style>
+            <div className="page-header d-flex justify-content-between align-items-start flex-wrap gap-3">
                 <div><h4>Attendees</h4><p>Manage event delegates and participants.</p></div>
-                <div className="d-flex gap-2">
-                    <Button variant="outline-light" size="sm" className="d-flex align-items-center gap-2" style={{ border: '1px solid var(--border-subtle)', borderRadius: 10 }} onClick={handleExport} disabled={exporting}>
-                        <BsDownload /> {exporting ? 'Exporting...' : 'Export'}
+                {/* All header buttons share `attendees-header-btn` so heights,
+                    padding, font size, and whitespace handling stay in lock-
+                    step. `ms-auto` keeps the toolbar pinned to the right even
+                    when the parent wraps it onto a second row on narrower
+                    viewports — instead of falling back to left-aligned. */}
+                <div className="d-flex gap-2 flex-wrap align-items-center attendees-header-toolbar ms-auto justify-content-end">
+                    <Button variant="outline-light" className="attendees-header-btn" onClick={handleExport} disabled={exporting}>
+                        <BsDownload /> {exporting ? 'Exporting…' : 'Export'}
                     </Button>
-                    <label className="btn btn-outline-light btn-sm d-flex align-items-center gap-2 mb-0" style={{ border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer' }}>
+                    <label className="btn btn-outline-light attendees-header-btn mb-0" style={{ cursor: 'pointer' }}>
                         <BsUpload /> Import <input type="file" hidden accept=".csv" onChange={handleImport} />
                     </label>
                     {(user?.role === 'admin' || user?.role === 'manager') && (
                         <Button
-                            variant="outline-light" size="sm"
-                            className="d-flex align-items-center gap-2"
-                            style={{ border: '1px solid var(--border-subtle)', borderRadius: 10 }}
+                            variant="outline-light"
+                            className="attendees-header-btn"
                             onClick={() => navigate('/attendees/email-template')}
                             title="Edit the confirmation email template sent to delegates"
                         >
                             <BsEnvelopePaperFill /> Email Template
                         </Button>
                     )}
+                    {/* Bulk send — emails the saved confirmation template
+                        to every delegate matching the current filter. Only
+                        shown when an event is picked; sending across all
+                        events at once is rarely intentional and would mix
+                        templates from different events in one run. */}
+                    {canManage && filterEvent && (
+                        <Button
+                            className="attendees-header-btn attendees-header-btn-accent"
+                            onClick={handleBulkSendConfirmations}
+                            disabled={bulkSending || total === 0}
+                            title={total === 0 ? 'No delegates match the current filter' : 'Email the confirmation to all matching delegates in this event'}
+                        >
+                            {bulkSending ? (
+                                <><Spinner size="sm" animation="border" /> Sending {bulkProgress.done}/{bulkProgress.total}…</>
+                            ) : (
+                                <><BsSendFill /> Send Confirmations</>
+                            )}
+                        </Button>
+                    )}
+                    {bulkSending && (
+                        <Button
+                            variant="outline-light"
+                            className="attendees-header-btn attendees-header-btn-danger"
+                            onClick={() => { bulkCancelRef.current = true; }}
+                        >
+                            Cancel
+                        </Button>
+                    )}
                     <Button
-                        variant="outline-light" size="sm"
-                        className="d-flex align-items-center gap-2"
-                        style={{
-                            border: '1px solid rgba(139,92,246,0.45)',
-                            color: '#a78bfa', borderRadius: 10,
-                            background: showReports ? 'rgba(139,92,246,0.12)' : 'transparent',
-                        }}
+                        variant="outline-light"
+                        className={`attendees-header-btn attendees-header-btn-violet ${showReports ? 'is-active' : ''}`}
                         onClick={() => setShowReports(s => !s)}
                         title="Toggle attendance report"
                     >
@@ -352,18 +626,50 @@ export default function AttendeesPage() {
                         so staff can't open it without a target event. */}
                     {filterEvent && canManage && (
                         <Button
-                            variant="outline-light" size="sm"
-                            className="d-flex align-items-center gap-2"
-                            style={{ border: '1px solid rgba(16,185,129,0.45)', color: '#10b981', borderRadius: 10 }}
+                            variant="outline-light"
+                            className="attendees-header-btn attendees-header-btn-emerald"
                             onClick={() => navigate(`/events/${filterEvent}/checkin`)}
                             title="Open the QR scanner for this event"
                         >
                             <BsCameraVideo /> Scanner
                         </Button>
                     )}
-                    {canManage && <Button className="btn-accent d-flex align-items-center gap-2" onClick={() => openModal()}><BsPlus size={18} /> Add Attendee</Button>}
+                    {canManage && (
+                        <Button className="btn-accent attendees-header-btn attendees-header-btn-primary" onClick={() => openModal()}>
+                            <BsPlus size={18} /> Add Attendee
+                        </Button>
+                    )}
                 </div>
             </div>
+
+            {/* Bulk-send progress bar — only mounts while a run is active. */}
+            {bulkSending && bulkProgress.total > 0 && (
+                <div style={{
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 12,
+                    padding: '12px 16px',
+                    marginBottom: 14,
+                }}>
+                    <div className="d-flex align-items-center justify-content-between" style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                        <div>Sending confirmation emails…</div>
+                        <div>
+                            <strong style={{ color: '#10b981' }}>{bulkProgress.sent} sent</strong>
+                            {bulkProgress.skipped > 0 && <> · <strong style={{ color: '#f59e0b' }}>{bulkProgress.skipped} skipped</strong></>}
+                            {bulkProgress.failed > 0 && <> · <strong style={{ color: '#ef4444' }}>{bulkProgress.failed} failed</strong></>}
+                            <> · {bulkProgress.done}/{bulkProgress.total}</>
+                        </div>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                        <div style={{
+                            width: `${(bulkProgress.done / bulkProgress.total) * 100}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #8b5cf6, #ec4899)',
+                            transition: 'width 0.2s',
+                        }} />
+                    </div>
+                </div>
+            )}
 
             {/* Stat Cards */}
             <Row className="g-3 mb-4">
@@ -404,14 +710,40 @@ export default function AttendeesPage() {
                     <option value="gov">Gov</option>
                     <option value="non-gov">Non-Gov</option>
                 </Form.Select>
-                {(filterEvent || filterStatus || filterTicket) && (
-                    <Button size="sm" variant="link" className="text-muted text-decoration-none" onClick={() => { setFilterEvent(''); setFilterStatus(''); setFilterTicket(''); }}>
+                {(filterEvent || filterStatus || filterTicket || search) && (
+                    <Button size="sm" variant="link" className="text-muted text-decoration-none" onClick={() => { setFilterEvent(''); setFilterStatus(''); setFilterTicket(''); setSearch(''); }}>
                         Clear
                     </Button>
                 )}
+                {/* Search — debounced 300ms; backend filters by name/email/company. */}
+                <Form.Control
+                    size="sm" type="search"
+                    className="form-control-dark ms-auto"
+                    style={{ maxWidth: 260 }}
+                    placeholder="Search name, email or company…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                />
             </div>
 
-            {filtered.length === 0 ? (
+            {loading ? (
+                /* Skeleton table — same column structure as the real table
+                   below so the layout doesn't jump when data arrives. */
+                <Table responsive className="premium-table mobile-cards">
+                    <thead>
+                        <tr>
+                            <th>#</th><th>Name</th><th>Contact</th><th>Company</th>
+                            <th>Ticket</th><th>Status</th><th>Event</th>
+                            {canManage && <th style={{ width: 100 }}>Actions</th>}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {Array.from({ length: 8 }).map((_, idx) => (
+                            <SkeletonRow key={`skel-${idx}`} canManage={canManage} seed={idx * 7} />
+                        ))}
+                    </tbody>
+                </Table>
+            ) : filtered.length === 0 ? (
                 <div className="empty-state" style={{ background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)' }}>
                     <div className="empty-state-icon"><BsPeopleFill /></div>
                     <p style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text-primary)' }}>No Attendees Found</p>
@@ -506,6 +838,53 @@ export default function AttendeesPage() {
                         ))}
                     </tbody>
                 </Table>
+            )}
+
+            {/* Pagination footer — hidden during the very first load (no
+                data yet to know the count) and when there's only one
+                page anyway. Page-size selector lives here too. */}
+            {!loading && total > 0 && (
+                /* Three-column grid: count on the left, page nav centered,
+                   page-size on the right. The grid gives the middle slot
+                   true horizontal centering even when left/right widths
+                   differ. Falls back to flex-wrap on narrow viewports. */
+                <div style={{
+                    marginTop: 16,
+                    padding: '12px 16px',
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 12,
+                    display: 'grid',
+                    gridTemplateColumns: '1fr auto 1fr',
+                    alignItems: 'center',
+                    gap: 12,
+                }}>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', justifySelf: 'start' }}>
+                        Showing <strong style={{ color: 'var(--text-primary)' }}>{((page - 1) * pageSize) + 1}–{Math.min(page * pageSize, total)}</strong> of <strong style={{ color: 'var(--text-primary)' }}>{total.toLocaleString()}</strong>
+                    </div>
+                    <div className="d-flex align-items-center gap-1 flex-wrap justify-content-center">
+                        <Button size="sm" variant="outline-light" disabled={page === 1} onClick={() => setPage(1)} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '4px 10px', fontSize: 12 }}>« First</Button>
+                        <Button size="sm" variant="outline-light" disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '4px 10px', fontSize: 12 }}>‹ Prev</Button>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '0 10px' }}>
+                            Page <strong style={{ color: 'var(--text-primary)' }}>{page}</strong> of {totalPages}
+                        </div>
+                        <Button size="sm" variant="outline-light" disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '4px 10px', fontSize: 12 }}>Next ›</Button>
+                        <Button size="sm" variant="outline-light" disabled={page >= totalPages} onClick={() => setPage(totalPages)} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '4px 10px', fontSize: 12 }}>Last »</Button>
+                    </div>
+                    <div style={{ justifySelf: 'end' }}>
+                        <Form.Select
+                            size="sm"
+                            value={pageSize}
+                            onChange={(e) => { setPage(1); setPageSize(Number(e.target.value)); }}
+                            style={{ width: 110, background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', fontSize: 12 }}
+                        >
+                            <option value={25}>25 / page</option>
+                            <option value={50}>50 / page</option>
+                            <option value={100}>100 / page</option>
+                            <option value={200}>200 / page</option>
+                        </Form.Select>
+                    </div>
+                </div>
             )}
 
             {/* Modal */}
@@ -649,7 +1028,9 @@ export default function AttendeesPage() {
                 </Modal.Body>
                 <Modal.Footer>
                     <Button variant="link" onClick={() => setShow(false)} style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>Cancel</Button>
-                    <Button className="btn-accent" onClick={handleSave}>Save</Button>
+                    <AsyncButton className="btn btn-accent" onClick={handleSave} loadingText={editing ? 'Saving…' : 'Adding…'}>
+                        {editing ? 'Save' : 'Add Attendee'}
+                    </AsyncButton>
                 </Modal.Footer>
             </Modal>
 

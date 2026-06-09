@@ -19,6 +19,7 @@
     "bootstrap": "^5.3.8",
     "chart.js": "^4.5.1",
     "cropperjs": "^1.6.2",
+    "emoji-picker-react": "^4.19.1",
     "html-to-image": "^1.11.13",
     "html5-qrcode": "^2.3.8",
     "jspdf": "^4.1.0",

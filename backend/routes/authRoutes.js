@@ -71,8 +71,49 @@ router.post('/signup', async (req, res) => {
 
         await conn.query('UPDATE tenants SET owner_user_id = ? WHERE id = ?', [userId, tenantId]);
 
-        // Seed a Free-plan subscription in 'trial' state. Without this row the
-        // limits middleware has nothing to check against and all billing endpoints 404.
+        // Seed the price book on first signup if the billing migration hasn't
+        // been run yet. Idempotent — only inserts plans that don't already exist.
+        const seedPlans = [
+            { code: 'free', name: 'Free', price_inr: 0,
+              max_events: 1, max_speakers: 50, max_attendees: 200, max_users: 3, max_storage_mb: 100,
+              features: ['10-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support'] },
+            { code: 'pro', name: 'Pro', price_inr: 2999,
+              max_events: 10, max_speakers: 500, max_attendees: 2500, max_users: 20, max_storage_mb: 5120,
+              features: ['10 concurrent events', 'Up to 500 speakers per event', 'Google Sheet imports', 'Priority support'] },
+            { code: 'enterprise', name: 'Enterprise', price_inr: 9999,
+              max_events: 0, max_speakers: 0, max_attendees: 0, max_users: 0, max_storage_mb: 0,
+              features: ['Unlimited events', 'Unlimited speakers', 'Custom branding', 'SLA + dedicated support'] }
+        ];
+        // Detect whether the max_storage_mb column has been added yet — the
+        // storage-limits migration may not have run on older deployments. If it
+        // hasn't, fall back to the legacy schema so signup still works.
+        const [colCheck] = await conn.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_storage_mb'`
+        );
+        const storageColExists = colCheck.length > 0;
+
+        for (const p of seedPlans) {
+            const [exists] = await conn.query('SELECT id FROM plans WHERE code = ?', [p.code]);
+            if (exists.length === 0) {
+                if (storageColExists) {
+                    await conn.query(
+                        `INSERT INTO plans (code, name, price_inr, max_events, max_speakers, max_attendees, max_users, max_storage_mb, features)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [p.code, p.name, p.price_inr, p.max_events, p.max_speakers, p.max_attendees, p.max_users, p.max_storage_mb, JSON.stringify(p.features)]
+                    );
+                } else {
+                    await conn.query(
+                        `INSERT INTO plans (code, name, price_inr, max_events, max_speakers, max_attendees, max_users, features)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [p.code, p.name, p.price_inr, p.max_events, p.max_speakers, p.max_attendees, p.max_users, JSON.stringify(p.features)]
+                    );
+                }
+            }
+        }
+
+        // Without a subscriptions row the limits middleware has nothing to check
+        // against and billing endpoints 404 — seed one in 'trial' on the Free plan.
         const [[{ id: freePlanId }]] = await conn.query(`SELECT id FROM plans WHERE code = 'free' LIMIT 1`);
         await conn.query(
             `INSERT INTO subscriptions (tenant_id, plan_id, status, current_period_end)

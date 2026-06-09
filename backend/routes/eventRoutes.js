@@ -6,9 +6,10 @@ const { checkLimit } = require('../middleware/limits');
 const { notifyRole } = require('../utils/notify');
 const { logAudit } = require('../utils/audit');
 const { createUpload, fileUrl } = require('../utils/storage');
+const { releaseTenantFiles } = require('../services/storageMeter');
 const { assignedIdsOf, assignedIdsForSql } = require('../utils/eventAccess');
 
-const upload = createUpload('event-logo');
+const upload = createUpload('event-logo', { source: 'events' });
 
 // Get Events
 router.get('/', protect, async (req, res) => {
@@ -171,8 +172,19 @@ router.delete('/:id', protect, async (req, res) => {
                 return res.status(403).json({ error: 'You can only delete events you created' });
             }
         }
+        // Snapshot the event's images before deletion so we can credit bytes back.
+        const [evRows] = await db.query(
+            `SELECT event_logo_url, company_logo_url, sns_card_bg_url
+             FROM events WHERE id=? AND tenant_id=?`,
+            [req.params.id, req.tenantId]
+        ).catch(() => [[]]);
+
         const [result] = await db.query('DELETE FROM events WHERE id=? AND tenant_id=?', [req.params.id, req.tenantId]);
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Event not found' });
+        if (evRows.length > 0) {
+            const urls = ['event_logo_url', 'company_logo_url', 'sns_card_bg_url'].map(c => evRows[0][c]).filter(Boolean);
+            if (urls.length) releaseTenantFiles(req.tenantId, ...urls).catch(() => {});
+        }
         logAudit(req, 'event.delete', 'event', req.params.id);
         res.json({ message: 'Event deleted' });
     } catch (err) {
@@ -210,6 +222,156 @@ router.put('/:id/template', protect, async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// === "I am attending" master template — parallel endpoints. The template
+// lives on a separate column so the SNS layout and the attending layout
+// can be designed independently (operators often want very different
+// compositions for "speaker announcement" vs "I am attending" posts).
+
+router.put('/:id/attending-template', protect, async (req, res) => {
+    if (req.user.role === 'employee') return res.status(403).json({ error: 'Employees cannot update templates' });
+    const { template } = req.body;
+    try {
+        const [result] = await db.query('UPDATE events SET attending_card_template=? WHERE id=? AND tenant_id=?', [JSON.stringify(template), req.params.id, req.tenantId]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Event not found' });
+        res.json({ message: 'Attending-card template saved successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.post('/:id/bulk-apply-attending-template', protect, async (req, res) => {
+    if (req.user.role === 'employee') return res.status(403).json({ error: 'Not allowed' });
+    try {
+        const [events] = await db.query('SELECT attending_card_template FROM events WHERE id=? AND tenant_id=?', [req.params.id, req.tenantId]);
+        if (!events.length) return res.status(404).json({ error: 'Event not found' });
+        if (!events[0].attending_card_template) return res.status(400).json({ error: 'No attending-card master template defined for this event. Please design one first.' });
+
+        const [result] = await db.query(
+            'UPDATE speakers SET attending_card_design=? WHERE event_id=? AND tenant_id=? AND deleted_at IS NULL',
+            [events[0].attending_card_template, req.params.id, req.tenantId]
+        );
+        const [countResult] = await db.query('SELECT COUNT(*) as count FROM speakers WHERE event_id=? AND tenant_id=? AND deleted_at IS NULL', [req.params.id, req.tenantId]);
+        res.json({ message: 'Attending template applied', affected: result.affectedRows, total: countResult[0].count });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// === Certificate email template — per-event subject + body used when
+// emailing certificates to delegates from BulkCertificatePage. {{name}},
+// {{event_title}}, {{event_date}} are substituted at send time. Returns
+// null when nothing has been customised — caller falls back to a sensible
+// hardcoded default in that case.
+router.get('/:id/certificate-email-template', protect, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT certificate_email_template FROM events WHERE id=? AND tenant_id=?', [req.params.id, req.tenantId]);
+        if (!rows.length) return res.status(404).json({ error: 'Event not found' });
+        const raw = rows[0].certificate_email_template;
+        const parsed = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+        res.json({ template: parsed });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/:id/certificate-email-template', protect, async (req, res) => {
+    if (req.user.role === 'employee') return res.status(403).json({ error: 'Employees cannot update templates' });
+    const { template } = req.body || {};
+    if (!template || typeof template !== 'object') return res.status(400).json({ error: 'template object required' });
+    // Whitelist what we store — accept only subject + body strings.
+    const subject = String(template.subject || '').trim();
+    const body    = String(template.body    || '').trim();
+    if (!subject || !body) return res.status(400).json({ error: 'subject and body are both required' });
+    try {
+        const [result] = await db.query(
+            'UPDATE events SET certificate_email_template=? WHERE id=? AND tenant_id=?',
+            [JSON.stringify({ subject, body }), req.params.id, req.tenantId]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Event not found' });
+        res.json({ message: 'Certificate email template saved' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// === Certificate send log — one row per "Send via Email" attempt. Supports
+// ?from=YYYY-MM-DD, ?to=YYYY-MM-DD, ?status=sent|skipped|failed, ?q=<search>.
+// Returns three things together so the history page renders without
+// chained requests: filtered rows (newest-first), aggregate counts, and
+// daily aggregates for the bar chart.
+router.get('/:id/certificate-send-log', protect, async (req, res) => {
+    try {
+        const [[evt]] = await db.query('SELECT id, created_by FROM events WHERE id=? AND tenant_id=?', [req.params.id, req.tenantId]);
+        if (!evt) return res.status(404).json({ error: 'Event not found' });
+        if (req.user.role === 'manager') {
+            const ok = evt.created_by === req.user.id || assignedIdsOf(req.user).includes(Number(req.params.id));
+            if (!ok) return res.status(403).json({ error: 'You do not own this event' });
+        } else if (req.user.role === 'employee') {
+            if (!assignedIdsOf(req.user).includes(Number(req.params.id))) {
+                return res.status(403).json({ error: 'You can only view your assigned event' });
+            }
+        }
+
+        // Build the shared filter clause + params. Reused across all three
+        // queries (rows, counts, daily) so the chart always reflects the
+        // same filtered slice the table shows.
+        const where = ['l.event_id = ?', 'l.tenant_id = ?'];
+        const params = [req.params.id, req.tenantId];
+        if (req.query.from) { where.push('l.sent_at >= ?'); params.push(`${req.query.from} 00:00:00`); }
+        if (req.query.to)   { where.push('l.sent_at <= ?'); params.push(`${req.query.to} 23:59:59`); }
+        if (req.query.status && ['sent','skipped','failed'].includes(req.query.status)) {
+            where.push('l.status = ?'); params.push(req.query.status);
+        }
+        if (req.query.q) {
+            where.push('(l.attendee_name LIKE ? OR l.attendee_email LIKE ?)');
+            params.push(`%${req.query.q}%`, `%${req.query.q}%`);
+        }
+        const whereSql = `WHERE ${where.join(' AND ')}`;
+
+        const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
+        const [rows] = await db.query(
+            `SELECT l.id, l.attendee_id, l.attendee_name, l.attendee_email,
+                    l.status, l.reason, l.sent_at, u.name AS sent_by_name
+             FROM cert_send_log l
+             LEFT JOIN users u ON l.sent_by = u.id
+             ${whereSql}
+             ORDER BY l.sent_at DESC
+             LIMIT ?`,
+            [...params, limit]
+        );
+        const [[counts]] = await db.query(
+            `SELECT
+                SUM(status='sent')    AS sent,
+                SUM(status='skipped') AS skipped,
+                SUM(status='failed')  AS failed,
+                COUNT(*) AS total
+             FROM cert_send_log l ${whereSql}`,
+            params
+        );
+        const [daily] = await db.query(
+            `SELECT DATE(l.sent_at) AS day,
+                    SUM(status='sent')    AS sent,
+                    SUM(status='skipped') AS skipped,
+                    SUM(status='failed')  AS failed
+             FROM cert_send_log l ${whereSql}
+             GROUP BY DATE(l.sent_at)
+             ORDER BY day ASC
+             LIMIT 365`,
+            params
+        );
+
+        res.json({
+            rows,
+            counts: {
+                sent:    Number(counts?.sent    || 0),
+                skipped: Number(counts?.skipped || 0),
+                failed:  Number(counts?.failed  || 0),
+                total:   Number(counts?.total   || 0),
+            },
+            daily: daily.map(d => ({
+                day: d.day instanceof Date ? d.day.toISOString().slice(0, 10) : String(d.day),
+                sent:    Number(d.sent    || 0),
+                skipped: Number(d.skipped || 0),
+                failed:  Number(d.failed  || 0),
+            })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Upload an image used by the agenda export designer (banner, footer, bg, logos).

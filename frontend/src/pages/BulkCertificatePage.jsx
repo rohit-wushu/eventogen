@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Form, Spinner, Alert, Badge } from 'react-bootstrap';
 import { toPng } from 'html-to-image';
@@ -7,7 +7,7 @@ import JSZip from 'jszip';
 import {
     BsArrowLeft, BsCloudUpload, BsTextareaT, BsTrash, BsPlus, BsDownload,
     BsAward, BsImage, BsBraces,
-    BsAlignStart, BsAlignCenter, BsAlignEnd,
+    BsAlignStart, BsAlignCenter, BsAlignEnd, BsEnvelopePaperFill,
 } from 'react-icons/bs';
 import {
     getEvents, getAttendees,
@@ -158,6 +158,8 @@ const valueForElement = (el, attendee, event) => {
 //     during drag for smoothness, then committed via onStop on pointerup
 //   • divides screen-pixel deltas by `scale` so positions remain in
 //     canvas units regardless of zoom level
+// onStart and onClick both receive the original pointer/mouse event so
+// callers can detect modifiers (shift for additive selection, etc.).
 function DragBox({ position, scale = 1, onStart, onStop, children, style, onClick }) {
     const ref = useRef(null);
     const dragState = useRef(null);
@@ -173,7 +175,7 @@ function DragBox({ position, scale = 1, onStart, onStop, children, style, onClic
             curX: position.x, curY: position.y,
             moved: false,
         };
-        onStart?.();
+        onStart?.(e);
         const move = (ev) => {
             if (!dragState.current) return;
             const dx = (ev.clientX - dragState.current.sx) / scale;
@@ -213,6 +215,88 @@ function DragBox({ position, scale = 1, onStart, onStop, children, style, onClic
     );
 }
 
+// One canvas text element. Lives in its own component so we can use a ref +
+// useLayoutEffect per-element to measure the actual rendered text width and
+// auto-recenter the element horizontally whenever the substituted value
+// changes (different recipient => different text width). Without this, a
+// design that looks centered for "Jagruthi N" goes off-canvas for
+// "Government R C College Of Commerce And Management".
+//
+// Re-centering rules:
+//   • Only fires when el.align === 'center' (the default for new elements).
+//   • Triggered by changes to the rendered value or canvas width, NOT by
+//     changes to el.x — that way the user can drag a center-aligned element
+//     off-center and the position sticks until a new recipient renders.
+//   • Operator can opt out per-element by setting align to 'left' or 'right',
+//     or by toggling the new `lockX` flag in the properties panel.
+function CanvasElement({
+    el, value, isPrimary, isSelected, generating, scale, onSelect, onDragStop, onAutoCenterX,
+}) {
+    const textRef = useRef(null);
+    const lastValueRef = useRef(value);
+    const lastWidthRef = useRef(0);
+
+    useLayoutEffect(() => {
+        if (!textRef.current) return;
+        if (el.align !== 'center' || el.lockX) return;
+        const w = textRef.current.offsetWidth;
+        // Only re-center when the rendered value or canvas width actually
+        // changed — guards against an infinite measure→setState→remeasure loop.
+        if (value === lastValueRef.current && w === lastWidthRef.current) return;
+        lastValueRef.current = value;
+        lastWidthRef.current = w;
+        const targetX = Math.round(0 - 0);  // no-op placeholder so eslint is happy
+        // The parent computes the desired x based on its canvas width; we
+        // just hand it the measured text width and let it decide.
+        onAutoCenterX?.(el.id, w);
+    }, [value, el.align, el.lockX, el.fontSize, el.fontFamily, el.fontWeight, el.letterSpacing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    return (
+        <DragBox
+            position={{ x: el.x, y: el.y }}
+            scale={scale}
+            onStart={(e) => onSelect(el.id, e?.shiftKey)}
+            onStop={(p) => onDragStop(el.id, p)}
+            onClick={(e) => onSelect(el.id, e?.shiftKey)}
+            style={{
+                // Outer DragBox auto-sizes to its content (the inline-block
+                // text span) so the drag hit-area and the visible outline
+                // both match the actual text width — no more dashed boxes
+                // extending past a long college name.
+                position: 'absolute', top: 0, left: 0,
+                cursor: 'move',
+                fontFamily: `"${el.fontFamily}", system-ui, sans-serif`,
+                fontSize: el.fontSize,
+                fontWeight: el.fontWeight,
+                fontStyle: el.italic ? 'italic' : 'normal',
+                textDecoration: el.underline ? 'underline' : 'none',
+                letterSpacing: el.letterSpacing ? `${el.letterSpacing}px` : 'normal',
+                color: el.color,
+                userSelect: 'none',
+                whiteSpace: el.nowrap ? 'nowrap' : 'pre-wrap',
+                lineHeight: 1.2,
+                // No fixed width: the box hugs the text. textAlign is moot
+                // here because the box equals the text. Centering happens via
+                // the auto-recenter effect above, not via flex/textAlign.
+                maxWidth: 'none',
+            }}
+        >
+            <span
+                ref={textRef}
+                style={{
+                    display: 'inline-block',
+                    outline: !generating && isSelected
+                        ? (isPrimary ? '2px dashed var(--accent)' : '2px dashed rgba(139,92,246,0.55)')
+                        : 'none',
+                    outlineOffset: 4,
+                }}
+            >
+                {value}
+            </span>
+        </DragBox>
+    );
+}
+
 export default function BulkCertificatePage() {
     const navigate = useNavigate();
 
@@ -231,6 +315,45 @@ export default function BulkCertificatePage() {
     const [canvas, setCanvas] = useState(DEFAULT_CANVAS);
     const [elements, setElements] = useState([]);                // text boxes
     const [selectedId, setSelectedId] = useState(null);
+    // Multi-selection set. `selectedId` is always the "primary" (last-clicked)
+    // element and drives the single-element properties panel. `selectedIds`
+    // is the broader set for group operations like "Center all on canvas".
+    // Shift-click toggles membership; a plain click resets the set to one.
+    const [selectedIds, setSelectedIds] = useState(() => new Set());
+
+    // Click handler shared by DragBox and the layers list. With shift held,
+    // toggles the element's membership and keeps the previously-clicked id as
+    // primary if it stays in the set; without shift, selects only this one.
+    const selectElement = (id, additive = false) => {
+        setSelectedIds(prev => {
+            if (!additive) return new Set([id]);
+            const next = new Set(prev);
+            if (next.has(id)) {
+                next.delete(id);
+                if (id === selectedId) {
+                    // Primary removed → fall back to any remaining id, or null.
+                    const fallback = next.values().next().value || null;
+                    setSelectedId(fallback);
+                }
+            } else {
+                next.add(id);
+                setSelectedId(id);
+            }
+            return next;
+        });
+        if (!additive) setSelectedId(id);
+    };
+
+    const clearSelection = () => {
+        setSelectedId(null);
+        setSelectedIds(new Set());
+    };
+
+    const selectAllElements = () => {
+        if (elements.length === 0) return;
+        setSelectedIds(new Set(elements.map(e => e.id)));
+        setSelectedId(elements[elements.length - 1].id);
+    };
     const [bgUploading, setBgUploading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [editorScale, setEditorScale] = useState(0.6);          // visual zoom of canvas
@@ -241,6 +364,13 @@ export default function BulkCertificatePage() {
     // ── Step 3: generate ──────────────────────────────────────────
     const [generating, setGenerating] = useState(false);
     const [generateProgress, setGenerateProgress] = useState({ done: 0, total: 0 });
+    // Pause / Cancel for the per-attendee loop. Stored in refs so the async
+    // loop can read the current value without re-renders or stale closures.
+    // `paused` state mirrors pausedRef for the UI; cancelledRef is one-shot.
+    const [paused, setPaused] = useState(false);
+    const pausedRef = useRef(false);
+    const cancelledRef = useRef(false);
+    useEffect(() => { pausedRef.current = paused; }, [paused]);
 
     const [error, setError] = useState('');
     const [info, setInfo] = useState('');
@@ -339,15 +469,42 @@ export default function BulkCertificatePage() {
         };
         setElements(prev => [...prev, newEl]);
         setSelectedId(id);
+        setSelectedIds(new Set([id]));
     };
 
     const updateElement = (id, patch) => {
         setElements(prev => prev.map(el => el.id === id ? { ...el, ...patch } : el));
     };
 
+    // Patch every selected element with the same partial. Used by group
+    // actions (Center on canvas, Align Left/Right, set color/size, etc.).
+    const updateSelectedElements = (patchFn) => {
+        setElements(prev => prev.map(el => selectedIds.has(el.id) ? { ...el, ...patchFn(el) } : el));
+    };
+
+    // Per-element new x so its box is horizontally centered on the canvas.
+    const centerXFor = (el) => Math.round((canvas.width - el.width) / 2);
+
+    // Group ops surfaced by the multi-select panel. All operate on every id
+    // in selectedIds at once.
+    const groupCenterOnCanvas = () => updateSelectedElements(el => ({ x: centerXFor(el) }));
+    const groupAlignLeft = () => {
+        const minX = Math.min(...elements.filter(e => selectedIds.has(e.id)).map(e => e.x));
+        updateSelectedElements(() => ({ x: minX }));
+    };
+    const groupAlignRight = () => {
+        const maxRight = Math.max(...elements.filter(e => selectedIds.has(e.id)).map(e => e.x + e.width));
+        updateSelectedElements(el => ({ x: maxRight - el.width }));
+    };
+    const groupSetTextAlignCenter = () => updateSelectedElements(() => ({ align: 'center' }));
+
     const removeElement = (id) => {
         setElements(prev => prev.filter(el => el.id !== id));
-        if (selectedId === id) setSelectedId(null);
+        if (selectedId === id) clearSelection();
+        setSelectedIds(prev => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev); next.delete(id); return next;
+        });
     };
 
     // DragBox already returns canvas-space coordinates (it divides screen
@@ -423,7 +580,7 @@ export default function BulkCertificatePage() {
                 height: data.canvas_height || DEFAULT_CANVAS.height,
             });
             setElements(Array.isArray(data.elements) ? data.elements : []);
-            setSelectedId(null);
+            clearSelection();
         } catch (err) {
             setError(err.response?.data?.error || 'Failed to load template');
         }
@@ -435,7 +592,7 @@ export default function BulkCertificatePage() {
         setBgUrl('');
         setCanvas(DEFAULT_CANVAS);
         setElements([]);
-        setSelectedId(null);
+        clearSelection();
     };
 
     const removeTemplate = async (id) => {
@@ -454,13 +611,25 @@ export default function BulkCertificatePage() {
     // a single PDF (one page each), AND a ZIP of individual PNGs as a
     // bonus — admins like to mail PNGs sometimes. Order matches the
     // filtered list so it's predictable.
+    // Polled by the generation loop. While `pausedRef.current` is true the
+    // loop sleeps in 200ms ticks; `cancelledRef.current` aborts the loop
+    // entirely (current-iteration result is discarded).
+    const waitWhilePaused = async () => {
+        while (pausedRef.current && !cancelledRef.current) {
+            await new Promise(r => setTimeout(r, 200));
+        }
+    };
+
     const handleGenerate = async () => {
         if (!filteredAttendees.length) { setError('No attendees match the current filter.'); return; }
         if (!stageRef.current) { setError('Editor not ready.'); return; }
         setError(''); setInfo('');
         // Clear the active selection so the editor's purple "selected"
         // outline doesn't bake into the exported PNGs.
-        setSelectedId(null);
+        clearSelection();
+        // Reset pause/cancel flags for this run.
+        cancelledRef.current = false;
+        setPaused(false);
         setGenerating(true);
         setGenerateProgress({ done: 0, total: filteredAttendees.length });
 
@@ -484,8 +653,15 @@ export default function BulkCertificatePage() {
         const zip = new JSZip();
         const folder = zip.folder('certificates');
 
+        let processed = 0;
         try {
             for (let i = 0; i < filteredAttendees.length; i++) {
+                // Honour Pause before doing any work for this attendee, then
+                // re-check Cancel right after waking up so a "Pause then Cancel"
+                // sequence aborts cleanly.
+                await waitWhilePaused();
+                if (cancelledRef.current) break;
+
                 const a = filteredAttendees[i];
                 setPreviewIndex(i);
                 // Let React commit + the browser paint before we snapshot.
@@ -500,14 +676,21 @@ export default function BulkCertificatePage() {
                     cacheBust: true,
                 });
 
-                if (i > 0) pdf.addPage([canvas.width, canvas.height], isLandscape ? 'landscape' : 'portrait');
+                if (processed > 0) pdf.addPage([canvas.width, canvas.height], isLandscape ? 'landscape' : 'portrait');
                 pdf.addImage(dataUrl, 'PNG', 0, 0, canvas.width, canvas.height);
 
                 const safeName = (a.name || `attendee-${a.id}`).replace(/[^\w-]+/g, '_').slice(0, 60);
                 const png64 = dataUrl.split(',')[1];
                 folder.file(`${String(i + 1).padStart(3, '0')}_${safeName}.png`, png64, { base64: true });
 
-                setGenerateProgress({ done: i + 1, total: filteredAttendees.length });
+                processed += 1;
+                setGenerateProgress({ done: processed, total: filteredAttendees.length });
+            }
+
+            if (cancelledRef.current && processed === 0) {
+                // Nothing rendered before cancel — skip the empty ZIP/PDF.
+                setInfo('Generation cancelled before any certificate was produced.');
+                return;
             }
 
             // Add the combined PDF inside the ZIP as well.
@@ -523,12 +706,19 @@ export default function BulkCertificatePage() {
             document.body.removeChild(link);
             URL.revokeObjectURL(link.href);
 
-            setInfo(`Generated ${filteredAttendees.length} certificate(s).`);
+            if (cancelledRef.current) {
+                setInfo(`Cancelled — packaged ${processed} of ${filteredAttendees.length} certificates already rendered.`);
+            } else {
+                setInfo(`Generated ${filteredAttendees.length} certificate(s).`);
+            }
         } catch (err) {
             console.error(err);
             setError('Generation failed: ' + (err.message || 'unknown error'));
         } finally {
             setGenerating(false);
+            setPaused(false);
+            pausedRef.current = false;
+            cancelledRef.current = false;
             setGenerateProgress({ done: 0, total: 0 });
         }
     };
@@ -858,14 +1048,107 @@ export default function BulkCertificatePage() {
                                         }}
                                     >Fit</button>
                                 </div>
+                                {/* Select all + selection count, tucked next to the
+                                    zoom controls. Shift-click on canvas also adds. */}
+                                {elements.length > 0 && (
+                                    <div className="d-flex align-items-center gap-2" style={{ fontSize: '0.78rem' }}>
+                                        <button
+                                            type="button"
+                                            onClick={selectAllElements}
+                                            title="Select every text element"
+                                            style={{
+                                                border: '1px solid var(--border-subtle)',
+                                                background: selectedIds.size === elements.length
+                                                    ? 'linear-gradient(135deg, #8b5cf6, #ec4899)'
+                                                    : 'rgba(255,255,255,0.04)',
+                                                color: selectedIds.size === elements.length ? '#fff' : 'var(--text-primary)',
+                                                borderRadius: 999, padding: '5px 12px',
+                                                fontWeight: 700, fontSize: '0.72rem', cursor: 'pointer',
+                                            }}
+                                        >
+                                            Select all{selectedIds.size > 0 ? ` · ${selectedIds.size}/${elements.length}` : ''}
+                                        </button>
+                                        {selectedIds.size > 1 && (
+                                            <button
+                                                type="button"
+                                                onClick={clearSelection}
+                                                title="Deselect everything"
+                                                style={{
+                                                    border: 'none', background: 'transparent',
+                                                    color: 'var(--text-muted)', cursor: 'pointer',
+                                                    fontSize: '0.72rem', fontWeight: 600, padding: '4px 6px',
+                                                }}
+                                            >Clear</button>
+                                        )}
+                                    </div>
+                                )}
                             </div>
+
+                            {/* Always-visible toolbar above the canvas with the
+                                most-asked-for align ops. "Center all" is a
+                                one-click shortcut that selects every element
+                                and recentres it on the canvas X axis — no
+                                shift-click needed. */}
+                            {elements.length > 0 && (
+                                <div className="d-flex align-items-center gap-2 flex-wrap mb-2" style={{
+                                    padding: '8px 10px', borderRadius: 10,
+                                    background: 'rgba(139,92,246,0.06)',
+                                    border: '1px solid rgba(139,92,246,0.25)',
+                                }}>
+                                    <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-primary)', marginRight: 4 }}>
+                                        Quick align
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const ids = new Set(elements.map(e => e.id));
+                                            setSelectedIds(ids);
+                                            setSelectedId(elements[elements.length - 1].id);
+                                            setElements(prev => prev.map(el => ({ ...el, x: Math.round((canvas.width - el.width) / 2) })));
+                                        }}
+                                        title="Move every text element so it's horizontally centered on the canvas"
+                                        style={{
+                                            border: 'none', cursor: 'pointer',
+                                            background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                                            color: '#fff', borderRadius: 999, padding: '6px 14px',
+                                            fontWeight: 700, fontSize: '0.78rem',
+                                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                                        }}
+                                    >
+                                        <BsAlignCenter size={13} /> Center all on canvas
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={selectAllElements}
+                                        title="Highlight every text element so you can use the group panel"
+                                        style={{
+                                            border: '1px solid var(--border-subtle)', cursor: 'pointer',
+                                            background: selectedIds.size === elements.length
+                                                ? 'rgba(139,92,246,0.18)'
+                                                : 'rgba(255,255,255,0.04)',
+                                            color: 'var(--text-primary)', borderRadius: 999, padding: '6px 12px',
+                                            fontWeight: 600, fontSize: '0.78rem',
+                                        }}
+                                    >
+                                        {selectedIds.size === elements.length ? '✓ All selected' : `Select all (${elements.length})`}
+                                    </button>
+                                    {selectedIds.size > 0 && (
+                                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                            {selectedIds.size} of {elements.length} selected · <kbd style={{
+                                                fontFamily: 'inherit', padding: '0 5px', borderRadius: 4,
+                                                background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-subtle)',
+                                            }}>Shift</kbd>-click to add more
+                                        </span>
+                                    )}
+                                </div>
+                            )}
 
                             {/* Canvas viewport — checkered backdrop for that
                                 Figma/Canva designer feel. Click outside the
                                 stage deselects the active element. */}
                             <div
                                 ref={viewportRef}
-                                onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}
+                                onClick={(e) => { if (e.target === e.currentTarget) clearSelection(); }}
                                 style={{
                                     background: `
                                         repeating-conic-gradient(rgba(0,0,0,0.04) 0% 25%, transparent 0% 50%) 0 0 / 20px 20px,
@@ -890,7 +1173,7 @@ export default function BulkCertificatePage() {
                                             // DragBox) deselects whatever was
                                             // active so its dashed outline goes
                                             // away.
-                                            if (e.target === e.currentTarget) setSelectedId(null);
+                                            if (e.target === e.currentTarget) clearSelection();
                                         }}
                                     >
                                         {!bgUrl && (
@@ -904,35 +1187,24 @@ export default function BulkCertificatePage() {
                                             </div>
                                         )}
                                         {elements.map(el => (
-                                            <DragBox
+                                            <CanvasElement
                                                 key={el.id}
-                                                position={{ x: el.x, y: el.y }}
+                                                el={el}
+                                                value={valueForElement(el, previewAttendee, event)}
+                                                isPrimary={selectedId === el.id}
+                                                isSelected={selectedIds.has(el.id)}
+                                                generating={generating}
                                                 scale={editorScale}
-                                                onStart={() => setSelectedId(el.id)}
-                                                onStop={(p) => handleDragStop(el.id, p)}
-                                                onClick={() => setSelectedId(el.id)}
-                                                style={{
-                                                    position: 'absolute', top: 0, left: 0,
-                                                    cursor: 'move',
-                                                    width: el.width,
-                                                    textAlign: el.align,
-                                                    fontFamily: `"${el.fontFamily}", system-ui, sans-serif`,
-                                                    fontSize: el.fontSize,
-                                                    fontWeight: el.fontWeight,
-                                                    fontStyle: el.italic ? 'italic' : 'normal',
-                                                    textDecoration: el.underline ? 'underline' : 'none',
-                                                    letterSpacing: el.letterSpacing ? `${el.letterSpacing}px` : 'normal',
-                                                    color: el.color,
-                                                    outline: !generating && selectedId === el.id ? '2px dashed var(--accent)' : 'none',
-                                                    outlineOffset: 4,
-                                                    userSelect: 'none',
-                                                    whiteSpace: el.nowrap ? 'nowrap' : 'pre-wrap',
-                                                    overflow: el.nowrap ? 'visible' : 'visible',
-                                                    lineHeight: 1.2,
+                                                onSelect={selectElement}
+                                                onDragStop={handleDragStop}
+                                                onAutoCenterX={(id, measuredW) => {
+                                                    // Center the rendered text horizontally on the canvas
+                                                    // — runs only when text content / typography changes,
+                                                    // not when the user drags.
+                                                    const newX = Math.max(0, Math.round((canvas.width - measuredW) / 2));
+                                                    updateElement(id, { x: newX });
                                                 }}
-                                            >
-                                                {valueForElement(el, previewAttendee, event)}
-                                            </DragBox>
+                                            />
                                         ))}
                                     </div>
                                 </div>
@@ -981,37 +1253,118 @@ export default function BulkCertificatePage() {
                                             Generate certificates
                                         </div>
                                         <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                                            Produces a single multi-page PDF + individual PNGs in one ZIP file.
+                                            Download a ZIP of PNGs + a combined PDF. To email each delegate their personalised certificate, open <strong>Email Template</strong>.
                                         </div>
                                     </div>
                                 </div>
-                                <Button
-                                    onClick={handleGenerate}
-                                    disabled={!bgUrl || elements.length === 0 || filteredAttendees.length === 0 || generating}
-                                    style={{
-                                        borderRadius: 12, padding: '10px 22px', fontWeight: 700, fontSize: '0.86rem',
-                                        background: 'linear-gradient(135deg, #10b981, #38bdf8)', border: 'none',
-                                        boxShadow: '0 10px 28px -10px rgba(16,185,129,0.7)',
-                                    }}
-                                >
-                                    {generating ? (
-                                        <><Spinner size="sm" animation="border" className="me-2" />
-                                            Rendering {generateProgress.done}/{generateProgress.total}…</>
-                                    ) : (
-                                        <><BsDownload size={14} className="me-2" />
-                                            Generate {filteredAttendees.length} cert{filteredAttendees.length === 1 ? '' : 's'}</>
-                                    )}
-                                </Button>
+                                <div className="d-flex gap-2 flex-wrap">
+                                    {/* Email template editor — opens its own page (with live
+                                        email preview + cert preview). Hidden until an event
+                                        is picked since the template is per-event. */}
+                                    <Button
+                                        variant="outline-light"
+                                        onClick={() => {
+                                            if (!eventId) { setError('Pick an event first.'); return; }
+                                            const q = templateId ? `?template=${templateId}` : '';
+                                            navigate(`/events/${eventId}/certificate-email-template${q}`);
+                                        }}
+                                        disabled={generating}
+                                        title={!eventId ? 'Pick an event first' : 'Edit the email template + send certificates by email'}
+                                        style={{ borderRadius: 12, padding: '10px 16px', fontWeight: 600, fontSize: '0.82rem', borderColor: 'rgba(255,255,255,0.18)', opacity: !eventId ? 0.65 : 1 }}
+                                    >
+                                        <BsEnvelopePaperFill size={14} className="me-2" /> Email Template
+                                    </Button>
+                                    <Button
+                                        onClick={handleGenerate}
+                                        disabled={!bgUrl || elements.length === 0 || filteredAttendees.length === 0 || generating}
+                                        style={{
+                                            borderRadius: 12, padding: '10px 22px', fontWeight: 700, fontSize: '0.86rem',
+                                            background: paused
+                                                ? 'linear-gradient(135deg, #f59e0b, #f97316)'
+                                                : 'linear-gradient(135deg, #10b981, #38bdf8)',
+                                            border: 'none',
+                                            boxShadow: paused
+                                                ? '0 10px 28px -10px rgba(245,158,11,0.7)'
+                                                : '0 10px 28px -10px rgba(16,185,129,0.7)',
+                                            transition: 'background 0.2s, box-shadow 0.2s',
+                                        }}
+                                    >
+                                        {paused ? (
+                                            <>⏸ Paused {generateProgress.done}/{generateProgress.total}</>
+                                        ) : generating ? (
+                                            <><Spinner size="sm" animation="border" className="me-2" />
+                                                Rendering {generateProgress.done}/{generateProgress.total}…</>
+                                        ) : (
+                                            <><BsDownload size={14} className="me-2" />
+                                                Generate {filteredAttendees.length} cert{filteredAttendees.length === 1 ? '' : 's'}</>
+                                        )}
+                                    </Button>
+                                </div>
                             </div>
                             {generating && generateProgress.total > 0 && (
-                                <div style={{ marginTop: 12, height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                                    <div style={{
-                                        width: `${(generateProgress.done / generateProgress.total) * 100}%`,
-                                        height: '100%',
-                                        background: 'linear-gradient(90deg, #10b981, #38bdf8)',
-                                        transition: 'width 0.2s',
-                                    }} />
-                                </div>
+                                <>
+                                    <div style={{ marginTop: 12, height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                                        <div style={{
+                                            width: `${(generateProgress.done / generateProgress.total) * 100}%`,
+                                            height: '100%',
+                                            background: paused
+                                                ? 'linear-gradient(90deg, #f59e0b, #f97316)'
+                                                : 'linear-gradient(90deg, #10b981, #38bdf8)',
+                                            transition: 'width 0.2s, background 0.2s',
+                                        }} />
+                                    </div>
+                                    {/* Pause/Resume + Cancel — sit under the progress
+                                        bar while a run is in flight. Pause halts the
+                                        loop between attendees so the current capture
+                                        finishes cleanly; Cancel ends the run and
+                                        still packages whatever has been rendered. */}
+                                    <div className="d-flex align-items-center justify-content-between gap-2 mt-2 flex-wrap">
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                            {paused
+                                                ? <>⏸ Paused at <strong style={{ color: '#f59e0b' }}>{generateProgress.done}</strong>/{generateProgress.total}</>
+                                                : <>Rendering <strong style={{ color: 'var(--text-primary)' }}>{generateProgress.done}</strong>/{generateProgress.total}…</>
+                                            }
+                                        </div>
+                                        <div className="d-flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setPaused(p => !p)}
+                                                title={paused ? 'Resume generation' : 'Pause after the current attendee finishes'}
+                                                style={{
+                                                    border: '1px solid rgba(245,158,11,0.45)',
+                                                    background: paused ? 'linear-gradient(135deg, #10b981, #38bdf8)' : 'rgba(245,158,11,0.12)',
+                                                    color: paused ? '#fff' : '#f59e0b',
+                                                    borderRadius: 999, padding: '5px 14px',
+                                                    fontWeight: 700, fontSize: '0.74rem', cursor: 'pointer',
+                                                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                                                }}
+                                            >
+                                                {paused
+                                                    ? <>▶ Resume</>
+                                                    : <>⏸ Pause</>
+                                                }
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    cancelledRef.current = true;
+                                                    pausedRef.current = false;
+                                                    setPaused(false);
+                                                }}
+                                                title="Stop generating now. Any certificates already rendered will still be packaged."
+                                                style={{
+                                                    border: '1px solid rgba(239,68,68,0.45)',
+                                                    background: 'rgba(239,68,68,0.12)',
+                                                    color: '#fca5a5',
+                                                    borderRadius: 999, padding: '5px 14px',
+                                                    fontWeight: 700, fontSize: '0.74rem', cursor: 'pointer',
+                                                }}
+                                            >
+                                                ✕ Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                </>
                             )}
                         </div>
                     </div>
@@ -1140,11 +1493,11 @@ export default function BulkCertificatePage() {
                             ) : (
                                 <div className="d-flex flex-column gap-2">
                                     {elements.map(el => {
-                                        const isActive = selectedId === el.id;
+                                        const isActive = selectedIds.has(el.id);
                                         return (
                                             <div
                                                 key={el.id}
-                                                onClick={() => setSelectedId(el.id)}
+                                                onClick={(e) => selectElement(el.id, e.shiftKey)}
                                                 className="d-flex align-items-center justify-content-between"
                                                 style={{
                                                     padding: '9px 12px', borderRadius: 10, cursor: 'pointer',
@@ -1178,6 +1531,102 @@ export default function BulkCertificatePage() {
                                 </div>
                             )}
                         </div>
+
+                        {/* Group actions — visible when 2+ elements are
+                            selected. Lets the user line them all up at once
+                            (e.g. center every selected text horizontally on
+                            the canvas, which is the common "center the title
+                            block" workflow). The single-element properties
+                            panel below still shows for the primary selection. */}
+                        {selectedIds.size > 1 && (
+                            <div className="bcp-card" style={{
+                                ...cardStyle,
+                                border: '1px solid rgba(139,92,246,0.55)',
+                                background: 'linear-gradient(180deg, var(--bg-card), rgba(139,92,246,0.08))',
+                            }}>
+                                <div className="d-flex align-items-center gap-2 mb-3">
+                                    <div style={{
+                                        width: 28, height: 28, borderRadius: 8,
+                                        background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                                        color: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0,
+                                        fontSize: 12, fontWeight: 800,
+                                    }}>{selectedIds.size}</div>
+                                    <div style={stepTitle}>elements selected · group actions</div>
+                                </div>
+                                <div className="d-flex flex-column gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={groupCenterOnCanvas}
+                                        title="Move each selected element so it's horizontally centered on the canvas"
+                                        style={{
+                                            padding: '10px 12px', borderRadius: 10,
+                                            background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                                            color: '#fff', border: 'none', cursor: 'pointer',
+                                            fontWeight: 700, fontSize: '0.85rem',
+                                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                                        }}
+                                    >
+                                        <BsAlignCenter size={14} /> Center all on canvas
+                                    </button>
+                                    <div className="row g-2">
+                                        <div className="col-6">
+                                            <button
+                                                type="button"
+                                                onClick={groupAlignLeft}
+                                                title="Snap every selected element's left edge to the leftmost"
+                                                className="w-100"
+                                                style={{
+                                                    padding: '8px 0', borderRadius: 8,
+                                                    background: 'rgba(255,255,255,0.04)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    color: 'var(--text-primary)', cursor: 'pointer',
+                                                    fontWeight: 600, fontSize: '0.78rem',
+                                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                                }}
+                                            >
+                                                <BsAlignStart size={13} /> Align left
+                                            </button>
+                                        </div>
+                                        <div className="col-6">
+                                            <button
+                                                type="button"
+                                                onClick={groupAlignRight}
+                                                title="Snap every selected element's right edge to the rightmost"
+                                                className="w-100"
+                                                style={{
+                                                    padding: '8px 0', borderRadius: 8,
+                                                    background: 'rgba(255,255,255,0.04)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    color: 'var(--text-primary)', cursor: 'pointer',
+                                                    fontWeight: 600, fontSize: '0.78rem',
+                                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                                }}
+                                            >
+                                                <BsAlignEnd size={13} /> Align right
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={groupSetTextAlignCenter}
+                                        title="Set text-align: center on every selected element"
+                                        style={{
+                                            padding: '8px 0', borderRadius: 8,
+                                            background: 'rgba(255,255,255,0.04)',
+                                            border: '1px solid var(--border-subtle)',
+                                            color: 'var(--text-primary)', cursor: 'pointer',
+                                            fontWeight: 600, fontSize: '0.78rem',
+                                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                        }}
+                                    >
+                                        <BsAlignCenter size={13} /> Text align: center
+                                    </button>
+                                </div>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.45 }}>
+                                    Tip: <kbd style={{ fontFamily: 'inherit', padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-subtle)' }}>Shift</kbd>-click another element on the canvas (or in the layers list) to add it to the selection.
+                                </div>
+                            </div>
+                        )}
 
                         {/* Element properties */}
                         {selected && (
@@ -1372,6 +1821,33 @@ export default function BulkCertificatePage() {
                                         onChange={e => updateElement(selected.id, { nowrap: e.target.checked })}
                                     />
                                 </div>
+                                {/* When align==='center', the editor auto-recenters
+                                    this element on the canvas every time the
+                                    rendered text changes (different recipient =
+                                    different text width). Lock X turns that off
+                                    so a deliberately off-centre position sticks. */}
+                                {selected.align === 'center' && (
+                                    <div className="mb-2 d-flex align-items-center justify-content-between" style={{
+                                        padding: '8px 12px', borderRadius: 10,
+                                        background: 'rgba(255,255,255,0.04)',
+                                        border: '1px solid var(--border-subtle)',
+                                    }}>
+                                        <div>
+                                            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                                Lock X position
+                                            </div>
+                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                                Don't auto-recenter when the text changes
+                                            </div>
+                                        </div>
+                                        <Form.Check
+                                            type="switch"
+                                            id={`lockx-${selected.id}`}
+                                            checked={!!selected.lockX}
+                                            onChange={e => updateElement(selected.id, { lockX: e.target.checked })}
+                                        />
+                                    </div>
+                                )}
                                 <div className="row g-2">
                                     <div className="col-6">
                                         <Form.Group className="mb-2">
@@ -1426,6 +1902,7 @@ export default function BulkCertificatePage() {
                 .bcp-card { transition: box-shadow 0.2s; }
                 .bcp-card:hover { box-shadow: 0 12px 32px -16px rgba(0,0,0,0.35); }
             `}</style>
+
         </div>
     );
 }

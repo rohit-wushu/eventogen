@@ -45,7 +45,7 @@ const bustGroupCaches = async (tenantId, groupId, alsoGroupsList = false) => {
 // treated as "stopped typing". Matches the previous in-memory TTL.
 const TYPING_TTL_SECONDS = 4;
 
-const upload = createUpload('chat', { limits: { fileSize: 25 * 1024 * 1024 } }); // 25 MB
+const upload = createUpload('chat', { limits: { fileSize: 25 * 1024 * 1024 }, source: 'chat' }); // 25 MB
 
 const classifyAttachment = (mimetype = '') => {
     if (mimetype.startsWith('image/')) return 'image';

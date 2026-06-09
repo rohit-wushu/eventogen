@@ -69,26 +69,50 @@ const buildFilename = (prefix) => (req, file, cb) => {
 };
 
 // `prefix` — string or `(req, file) => string`. `opts` is passed straight
-// to multer (limits, fileFilter, etc.).
+// to multer (limits, fileFilter, etc.). When `opts.source` is set, every
+// successful upload through `single` / `fields` / `array` is recorded against
+// the tenant for storage-quota accounting (see services/storageMeter).
 const createUpload = (prefix, opts = {}) => {
-    if (usingS3()) {
-        return multer({
+    const { source, ...multerOpts } = opts;
+    const upload = usingS3()
+        ? multer({
             storage: multerS3({
                 s3: s3Client,
                 bucket: S3_BUCKET,
                 contentType: multerS3.AUTO_CONTENT_TYPE,
                 key: buildFilename(prefix)
             }),
-            ...opts
+            ...multerOpts
+        })
+        : multer({
+            storage: multer.diskStorage({
+                destination: (req, file, cb) => cb(null, 'uploads/'),
+                filename: buildFilename(prefix)
+            }),
+            ...multerOpts
         });
-    }
-    return multer({
-        storage: multer.diskStorage({
-            destination: (req, file, cb) => cb(null, 'uploads/'),
-            filename: buildFilename(prefix)
-        }),
-        ...opts
-    });
+
+    if (!source) return upload;
+
+    // Wrap so every upload gets:
+    //   [storageGuard, multer, meterUpload]
+    // storageGuard runs BEFORE multer so we don't burn bandwidth on a doomed
+    // transfer; meterUpload runs AFTER so it can read the parsed file size.
+    let meterUpload, storageGuard;
+    try { ({ meterUpload } = require('../services/storageMeter')); }
+    catch { return upload; }
+    try { ({ storageGuard } = require('../middleware/limits')); }
+    catch { /* limits module not loadable for some reason — degrade to meter-only */ }
+    const meter = meterUpload(source);
+    const guard = storageGuard ? storageGuard() : (req, res, next) => next();
+
+    const wrap = (mw) => [guard, mw, meter];
+    return {
+        single: (field) => wrap(upload.single(field)),
+        fields: (cfg) => wrap(upload.fields(cfg)),
+        array: (field, max) => wrap(upload.array(field, max)),
+        none: () => upload.none()
+    };
 };
 
 // Public URL for an uploaded file. Multer-s3 sets `file.location` to the

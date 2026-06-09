@@ -53,9 +53,34 @@ async function getOrCreateSubscriptionRow(tenantId) {
     let [rows] = await db.query(select, [tenantId]);
     if (rows.length > 0) return rows[0];
 
-    const [[freePlan]] = await db.query(`SELECT id FROM plans WHERE code = 'free' LIMIT 1`);
-    if (!freePlan) throw new Error('Free plan missing — run migrate_billing_stage4.js');
+    // Self-heal step 1: ensure the 'free' plan row exists. Older deployments
+    // that never ran migrate_billing_stage4.js have an empty plans table.
+    let [freePlanRows] = await db.query(`SELECT id FROM plans WHERE code = 'free' LIMIT 1`);
+    if (freePlanRows.length === 0) {
+        // Detect optional storage column so the INSERT works on both schemas.
+        const [hasStorage] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_storage_mb'`
+        );
+        const features = JSON.stringify(['10-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support']);
+        if (hasStorage.length > 0) {
+            await db.query(
+                `INSERT INTO plans (code, name, price_inr, max_events, max_speakers, max_attendees, max_users, max_storage_mb, features)
+                 VALUES ('free', 'Free', 0, 1, 50, 200, 3, 100, ?)`,
+                [features]
+            );
+        } else {
+            await db.query(
+                `INSERT INTO plans (code, name, price_inr, max_events, max_speakers, max_attendees, max_users, features)
+                 VALUES ('free', 'Free', 0, 1, 50, 200, 3, ?)`,
+                [features]
+            );
+        }
+        [freePlanRows] = await db.query(`SELECT id FROM plans WHERE code = 'free' LIMIT 1`);
+    }
+    const freePlan = freePlanRows[0];
 
+    // Self-heal step 2: seed the subscription row.
     const [[tenant]] = await db.query(`SELECT status, trial_ends_at FROM tenants WHERE id = ? LIMIT 1`, [tenantId]);
     const subStatus = tenant?.status === 'trial' ? 'trial' : 'active';
     await db.query(

@@ -29,7 +29,16 @@ const RESOURCE_LABELS = {
     events: 'Events',
     speakers: 'Speakers',
     attendees: 'Attendees',
-    users: 'Team members'
+    users: 'Team members',
+    storage: 'Storage'
+};
+
+// MB → human (KB / MB / GB). Storage usage comes back in MB.
+const fmtStorage = (mb) => {
+    if (mb == null) return '0 MB';
+    if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+    if (mb >= 1)    return `${mb.toFixed(mb < 10 ? 2 : 1)} MB`;
+    return `${Math.round(mb * 1024)} KB`;
 };
 
 export default function BillingPage() {
@@ -296,12 +305,15 @@ export default function BillingPage() {
                     const u = usage[key];
                     if (!u) return null;
                     const pct = u.unlimited ? 0 : Math.min(100, (u.used / u.limit) * 100);
+                    const isStorage = u.unit === 'MB';
+                    const usedLabel  = isStorage ? fmtStorage(u.used)  : u.used;
+                    const limitLabel = u.unlimited ? '∞' : (isStorage ? fmtStorage(u.limit) : u.limit);
                     return (
                         <div key={key} style={{ marginBottom: 10 }}>
                             <div className="d-flex justify-content-between" style={{ fontSize: 12, marginBottom: 3 }}>
                                 <span style={{ color: 'var(--text-primary)' }}>{label}</span>
                                 <span style={{ color: 'var(--text-muted)' }}>
-                                    {u.used} / {u.unlimited ? '∞' : u.limit}
+                                    {usedLabel} / {limitLabel}
                                 </span>
                             </div>
                             <ProgressBar

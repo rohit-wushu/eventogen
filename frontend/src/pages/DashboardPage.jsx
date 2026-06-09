@@ -5,6 +5,8 @@ import { BsCalendarEvent, BsPersonBadge, BsBriefcase, BsListTask, BsArrowUpRight
 import { getEvents, getSpeakers, getPartners, getAgendas, getAttendees, getTravelStats, getUsers } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import DashboardAnnouncements from '../components/DashboardAnnouncements';
+import PlanUsageCard from '../components/PlanUsageCard';
+import UpgradeBanner from '../components/UpgradeBanner';
 
 export default function DashboardPage() {
     const { user } = useAuth();
@@ -118,9 +120,14 @@ export default function DashboardPage() {
                 AppLayout still shows critical items at the very top. */}
             <DashboardAnnouncements />
 
-            <div className="page-header">
-                <h4>Welcome back, {user?.name} 👋</h4>
-                <p className='text-white small'>Here's what's happening across your events.</p>
+            <div className="page-header d-flex justify-content-between align-items-center flex-wrap gap-3">
+                <div>
+                    <h4>Welcome back, {user?.name} 👋</h4>
+                    <p className='text-white small mb-0'>Here's what's happening across your events.</p>
+                </div>
+                {/* Upgrade pill — admins & managers only; hidden for Enterprise.
+                    Color escalates with quota pressure (purple → orange → red). */}
+                {['admin', 'manager'].includes(user?.role) && <UpgradeBanner />}
             </div>
 
             {fetchError && (
@@ -151,6 +158,15 @@ export default function DashboardPage() {
                     );
                 })}
             </Row>
+
+            {/* Plan usage — admins/managers only; employees can't act on it */}
+            {['admin', 'manager'].includes(user?.role) && (
+                <Row className="mb-4">
+                    <Col md={12}>
+                        <PlanUsageCard />
+                    </Col>
+                </Row>
+            )}
 
             {/* Charts Row */}
             <Row className="mb-4">

@@ -7,7 +7,8 @@ const { requireSection } = require('../middleware/permissions');
 // adds the section check. Admins/managers always pass; employees pass when
 // their permissions column is NULL or includes 'speakers'.
 const guard = [protect, requireSection('speakers')];
-const { checkLimit } = require('../middleware/limits');
+const { checkLimit, capacityCheck } = require('../middleware/limits');
+const { releaseTenantFiles, recordTenantUpload } = require('../services/storageMeter');
 const { notifyAdminsAndManagers } = require('../utils/notify');
 const { processSpeakerPhoto, deleteUpload } = require('../utils/imageProcessor');
 const { createUpload, fileUrl } = require('../utils/storage');
@@ -80,7 +81,7 @@ const downloadImageToUploads = (url, baseName) => new Promise((resolve, reject) 
     attempt(url, 5);
 });
 
-const upload = createUpload('speaker');
+const upload = createUpload('speaker', { source: 'speakers' });
 
 // Multi-event aware access helpers. The local `employeeAllowed(req, x)`
 // wrapper keeps the existing call-site signature while delegating to the
@@ -242,6 +243,14 @@ router.post('/import', guard, upload.single('file'), async (req, res) => {
                 const skipped = speakers.length - newSpeakers.length;
 
                 if (newSpeakers.length > 0) {
+                    const cap = await capacityCheck(req.tenantId, 'speakers', newSpeakers.length);
+                    if (!cap.ok) {
+                        try { fs.unlinkSync(req.file.path); } catch {}
+                        return res.status(cap.status).json(cap.body);
+                    }
+                }
+
+                if (newSpeakers.length > 0) {
                     const query = 'INSERT INTO speakers (tenant_id, salutation, name, bio, designation, company, location, email, office_no, role, topic, panel, mobile_no, category, spokesperson_name, linkedin_url, event_id, created_by) VALUES ?';
                     const values = newSpeakers.map(s => [req.tenantId, s.salutation, s.name, s.bio, s.designation, s.company, s.location, s.email, s.office_no, s.role, s.topic, s.panel, s.mobile_no, s.category, s.spokesperson_name, s.linkedin_url, s.event_id, s.created_by]);
                     await db.query(query, [values]);
@@ -357,6 +366,11 @@ router.post('/import-gsheet', guard, async (req, res) => {
                 const valid = speakers.filter(s => s.name && s.name.trim());
                 if (valid.length === 0) return res.status(400).json({ error: 'No speakers found in the sheet. Make sure the first row contains headers (Name, Designation, Company, Email, Role, …).' });
 
+                // Fast plan-limit check on the upper bound (pre-dedup) so we don't
+                // waste time downloading photos for an import that will be rejected.
+                const preCap = await capacityCheck(req.tenantId, 'speakers', valid.length);
+                if (!preCap.ok) return res.status(preCap.status).json(preCap.body);
+
                 // Download photos in parallel (bounded concurrency to be polite to Drive/remote hosts).
                 // Failed downloads don't block the import — the speaker still gets inserted, just without a photo.
                 const photoFailures = [];
@@ -399,9 +413,29 @@ router.post('/import-gsheet', guard, async (req, res) => {
                 const skipped = withPhotos.length - newSpeakers.length;
 
                 if (newSpeakers.length > 0) {
+                    // Precise post-dedup check — usage may have shifted while we
+                    // were downloading photos, so re-verify before inserting.
+                    const cap = await capacityCheck(req.tenantId, 'speakers', newSpeakers.length);
+                    if (!cap.ok) return res.status(cap.status).json(cap.body);
+
                     const query = 'INSERT INTO speakers (tenant_id, salutation, name, bio, photo_url, designation, company, location, email, office_no, role, topic, panel, mobile_no, category, spokesperson_name, linkedin_url, event_id, created_by) VALUES ?';
                     const values = newSpeakers.map(s => [req.tenantId, s.salutation, s.name, s.bio, s.photo_url || null, s.designation, s.company, s.location, s.email, s.office_no, s.role, s.topic, s.panel, s.mobile_no, s.category, s.spokesperson_name, s.linkedin_url, s.event_id, s.created_by]);
                     await db.query(query, [values]);
+
+                    // Meter the downloaded photos against the tenant's storage
+                    // quota. Photos came from `processSpeakerPhoto` → local disk,
+                    // so stat() works for both disk-mode and S3-mode (in S3 mode
+                    // the photo was uploaded via processSpeakerPhoto which goes
+                    // through the upload helper — already metered there).
+                    for (const s of newSpeakers) {
+                        if (!s.photo_url || typeof s.photo_url !== 'string') continue;
+                        const rel = s.photo_url.replace(/^\/?uploads\//, '');
+                        const diskPath = path.join('uploads', rel);
+                        try {
+                            const stat = fs.statSync(diskPath);
+                            recordTenantUpload(req.tenantId, `uploads/${rel}`, stat.size, 'speakers').catch(() => {});
+                        } catch { /* missing file — skip */ }
+                    }
                 }
 
                 const photoOk = newSpeakers.filter(s => s.photo_url).length;
@@ -643,6 +677,55 @@ router.post('/:id/save-sns', guard, upload.single('sns_card'), async (req, res) 
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// "I am attending" card — same upload contract as save-sns but persisted on
+// the speakers.attending_card_url / .attending_card_design columns so it
+// lives alongside the speaker-announcement card rather than overwriting it.
+router.post('/:id/save-attending-card', guard, upload.single('sns_card'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No image file provided' });
+    const { design_metadata } = req.body;
+    try {
+        const url = fileUrl(req.file);
+        const [result] = await db.query(
+            'UPDATE speakers SET attending_card_url=?, attending_card_design=? WHERE id=? AND tenant_id=?',
+            [url, design_metadata || null, req.params.id, req.tenantId]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Speaker not found' });
+        res.json({ message: 'I-am-attending card saved successfully', url });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delete only the I-am-attending card (keeps the speaker + speaker-card intact).
+router.delete('/:id/attending-card', guard, async (req, res) => {
+    try {
+        const [rows] = await db.query(
+            'SELECT s.attending_card_url, s.event_id, e.created_by FROM speakers s LEFT JOIN events e ON s.event_id = e.id AND e.tenant_id = s.tenant_id WHERE s.id = ? AND s.tenant_id = ? AND s.deleted_at IS NULL',
+            [req.params.id, req.tenantId]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: 'Speaker not found' });
+
+        const isManagerAllowed = req.user.role === 'manager' &&
+            (rows[0].created_by === req.user.id || assignedIdsOf(req.user).includes(Number(rows[0].event_id)));
+
+        if (req.user.role === 'manager' && !isManagerAllowed)
+            return res.status(403).json({ error: 'You do not have permission to modify this speaker' });
+        if (req.user.role === 'employee' && !employeeAllowed(req, rows[0].event_id))
+            return res.status(403).json({ error: 'You can only modify speakers in your assigned event' });
+
+        const url = rows[0].attending_card_url;
+        if (url && url.startsWith('/uploads/')) {
+            const filePath = path.join(__dirname, '..', url);
+            fs.unlink(filePath, (err) => {
+                if (err && err.code !== 'ENOENT') console.warn('Attending card file unlink failed:', err.message);
+            });
+            releaseTenantFiles(req.tenantId, url).catch(() => {});
+        }
+
+        const [result] = await db.query('UPDATE speakers SET attending_card_url=NULL, attending_card_design=NULL WHERE id=? AND tenant_id=?', [req.params.id, req.tenantId]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Speaker not found' });
+        res.json({ message: 'I-am-attending card deleted' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Delete only the SNS card (keeps the speaker intact)
 router.delete('/:id/sns-card', guard, async (req, res) => {
     try {
@@ -667,6 +750,7 @@ router.delete('/:id/sns-card', guard, async (req, res) => {
             fs.unlink(filePath, (err) => {
                 if (err && err.code !== 'ENOENT') console.warn('SNS card file unlink failed:', err.message);
             });
+            releaseTenantFiles(req.tenantId, url).catch(() => {});
         }
 
         const [result] = await db.query('UPDATE speakers SET sns_card_url=NULL, sns_card_design=NULL WHERE id=? AND tenant_id=?', [req.params.id, req.tenantId]);

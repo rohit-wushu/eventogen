@@ -9,12 +9,20 @@ const { requireSection } = require('../middleware/permissions');
 // adds the section check. Admins/managers always pass; employees pass when
 // their permissions column is NULL or includes 'attendees'.
 const guard = [protect, requireSection('attendees')];
-const { checkLimit } = require('../middleware/limits');
+const { checkLimit, capacityCheck } = require('../middleware/limits');
 const { notifyAdminsAndManagers } = require('../utils/notify');
 const { sendMail } = require('../utils/mailer');
-const { createUpload } = require('../utils/storage');
+const { createUpload, fileUrl } = require('../utils/storage');
+const multer = require('multer');
 const csv = require('csv-parser');
 const fs = require('fs');
+
+// In-memory multer for certificate uploads — we forward the PNG straight
+// to the mailer as an attachment, no need to persist anything on disk.
+const certUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB — comfortably above a PNG cert
+});
 
 // Random URL-safe token used as the QR payload. 16 bytes = 128 bits, more
 // than enough entropy that a guesser can't enumerate valid tokens, and
@@ -46,6 +54,12 @@ const DEFAULT_TEMPLATE = {
     closing_2: 'Looking forward to seeing you there.',
     footer: "This is a one-time confirmation from {{org_name}}. If you didn't register for this event, please ignore this email.",
     brand_color: '',                 // empty = use event's primary_color, then fall back to #8b5cf6
+    // Optional banner image rendered at the very top of the email
+    // (above the gradient hero). Stored as a URL — null/empty hides it.
+    header_image_url: '',
+    // Operators can opt out of the check-in QR for events that don't
+    // need on-site scanning (online events, no check-in flow, etc.).
+    show_qr: true,
     show_event: true,
     show_when: true,
     show_venue: true,
@@ -112,9 +126,10 @@ const renderConfirmationEmail = ({ attendee, event, tenant, template, qrCid = nu
 
     // The QR block — centred on a light card so it stands out against the
     // email body. cid: resolves via nodemailer attachments; data: is used
-    // for in-browser previews.
+    // for in-browser previews. Suppressed when the operator turns off
+    // show_qr or when no QR source was passed.
     const qrSrc = qrCid ? `cid:${qrCid}` : qrDataUrl;
-    const qrBlock = qrSrc ? `
+    const qrBlock = (qrSrc && tpl.show_qr !== false) ? `
         <div style="text-align: center; padding: 24px 22px; margin-bottom: 22px; border-radius: 12px; background: #ffffff; border: 1px dashed ${accent};">
             <div style="font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: ${accent}; font-weight: 700; margin-bottom: 12px;">
                 Show this at check-in
@@ -126,9 +141,19 @@ const renderConfirmationEmail = ({ attendee, event, tenant, template, qrCid = nu
         </div>
     ` : '';
 
+    // Optional header banner image at the very top of the card. Sits
+    // above the gradient hero so the operator can drop a letterhead /
+    // event banner without changing the rest of the layout.
+    const headerImage = tpl.header_image_url ? `
+        <div style="background: #ffffff; padding: 0; text-align: center;">
+            <img src="${escapeHtml(tpl.header_image_url)}" alt="" style="display: block; width: 100%; max-width: 100%; height: auto; border: 0;" />
+        </div>
+    ` : '';
+
     return `
         <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 40px 24px; background: #f8fafc;">
             <div style="background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
+                ${headerImage}
                 <div style="background: linear-gradient(135deg, ${accent}, #ec4899); padding: 36px 32px; text-align: center;">
                     <div style="width: 56px; height: 56px; border-radius: 14px; background: rgba(255,255,255,0.2); display: inline-flex; align-items: center; justify-content: center; font-size: 28px; color: #fff; margin-bottom: 14px;">✓</div>
                     <h2 style="margin: 0; color: #ffffff; font-size: 22px; font-weight: 700; letter-spacing: -0.01em;">${fill(tpl.hero_title)}</h2>
@@ -171,6 +196,32 @@ const loadTenantTemplate = async (tenantId) => {
     catch { return null; }
 };
 
+// Per-event template override (events.confirmation_email_template JSON).
+// Null = "no override, use the tenant default". Stored as JSON so the
+// shape exactly mirrors what the tenant-scoped store keeps.
+const loadEventTemplate = async (tenantId, eventId) => {
+    if (!eventId) return null;
+    const [[row]] = await db.query(
+        'SELECT confirmation_email_template FROM events WHERE id = ? AND tenant_id = ?',
+        [eventId, tenantId]
+    );
+    if (!row?.confirmation_email_template) return null;
+    const raw = row.confirmation_email_template;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+};
+
+// Resolve which template to render for a given send. Event override wins,
+// tenant template second, defaults last. Returns { template, source }.
+// The renderer always gets a non-null `template`; `source` tells the GET
+// endpoint how to label the response.
+const resolveTemplate = async (tenantId, eventId) => {
+    const event = await loadEventTemplate(tenantId, eventId);
+    if (event) return { template: event, source: 'event' };
+    const tenant = await loadTenantTemplate(tenantId);
+    if (tenant) return { template: tenant, source: 'tenant' };
+    return { template: null, source: 'default' };
+};
+
 const upload = createUpload('attendees-import');
 
 // Multi-event aware access. The local `employeeAllowed` shim adds the
@@ -182,43 +233,118 @@ const empAttendeeEventIds = (req) => eventIdsForSection(req.user, 'attendees');
 // GET all attendees (optional ?event_id= filter)
 router.get('/', guard, async (req, res) => {
     try {
-        // Join `users` on checked_in_by so the row carries the name of the
-        // staffer who scanned the delegate in. Lets the table show a "by
-        // <name> at <time>" line under the Checked In status without an
-        // extra round-trip.
-        let query = `
-            SELECT a.*, e.title as event_title, u.name as checked_in_by_name
-            FROM attendees a
-            LEFT JOIN events e ON a.event_id = e.id AND e.tenant_id = a.tenant_id
-            LEFT JOIN users u ON a.checked_in_by = u.id
-            WHERE a.tenant_id = ? AND a.deleted_at IS NULL
-        `;
-        const params = [req.tenantId];
+        // Two-mode endpoint:
+        //   • No `page` param (legacy): return the bare array, scoped + filtered.
+        //   • `page` param present: return a paginated envelope
+        //     { rows, total, page, pageSize, status_counts } so the
+        //     Attendees page can render N rows at a time without loading
+        //     all 700+ rows up front.
+        const paginated = req.query.page !== undefined;
+
+        // Build the shared scope + filter clause. Both modes use it.
+        let where = 'WHERE a.tenant_id = ? AND a.deleted_at IS NULL';
+        const baseParams = [req.tenantId];
 
         if (req.user.role === 'manager') {
-            query += ' AND (e.created_by = ? OR a.event_id IN (?))';
-            params.push(req.user.id, assignedIdsForSql(req.user));
+            where += ' AND (e.created_by = ? OR a.event_id IN (?))';
+            baseParams.push(req.user.id, assignedIdsForSql(req.user));
         } else if (req.user.role === 'employee') {
-            if (assignedIdsOf(req.user).length === 0) return res.json([]);
-            query += ' AND a.event_id IN (?)';
-            params.push(empAttendeeEventIds(req));
+            if (assignedIdsOf(req.user).length === 0) {
+                return res.json(paginated
+                    ? { rows: [], total: 0, page: 1, pageSize: 0, status_counts: { all: 0, confirmed: 0, checked_in: 0, cancelled: 0, registered: 0 } }
+                    : []);
+            }
+            where += ' AND a.event_id IN (?)';
+            baseParams.push(empAttendeeEventIds(req));
         }
 
         if (req.query.event_id) {
-            query += ' AND a.event_id = ?';
-            params.push(req.query.event_id);
+            where += ' AND a.event_id = ?';
+            baseParams.push(req.query.event_id);
         }
         if (req.query.ticket_type) {
-            query += ' AND a.ticket_type = ?';
-            params.push(req.query.ticket_type);
+            where += ' AND a.ticket_type = ?';
+            baseParams.push(req.query.ticket_type);
         }
+
+        // Status filter — applied to the listing query only. The
+        // status_counts aggregate ignores it so the stat cards keep
+        // showing totals regardless of which card you've clicked.
+        let listWhere = where;
+        const listParams = [...baseParams];
         if (req.query.status) {
-            query += ' AND a.status = ?';
-            params.push(req.query.status);
+            listWhere += ' AND a.status = ?';
+            listParams.push(req.query.status);
         }
-        query += ' ORDER BY a.created_at DESC';
-        const [rows] = await db.query(query, params);
-        res.json(rows);
+        // Optional free-text search (name / email / company). Surfaced by
+        // the paginated UI so the operator can find one delegate among
+        // 700+ without scrolling.
+        if (paginated && req.query.q) {
+            listWhere += ' AND (a.name LIKE ? OR a.email LIKE ? OR a.company LIKE ?)';
+            const term = `%${req.query.q}%`;
+            listParams.push(term, term, term);
+        }
+
+        const baseFrom = `FROM attendees a
+            LEFT JOIN events e ON a.event_id = e.id AND e.tenant_id = a.tenant_id
+            LEFT JOIN users u ON a.checked_in_by = u.id`;
+
+        if (!paginated) {
+            // Legacy: bare array, full result set (DashboardPage, exports,
+            // bulk cert, etc. all expect this shape).
+            const [rows] = await db.query(
+                `SELECT a.*, e.title as event_title, u.name as checked_in_by_name
+                 ${baseFrom}
+                 ${listWhere}
+                 ORDER BY a.created_at DESC`,
+                listParams
+            );
+            return res.json(rows);
+        }
+
+        // Paginated mode.
+        const page     = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const pageSize = Math.min(200, Math.max(10, parseInt(req.query.pageSize, 10) || 50));
+        const offset   = (page - 1) * pageSize;
+
+        // Fire list + counts + status aggregate in parallel — saves one
+        // round-trip's worth of latency on a busy event.
+        const [[rows], [[totalRow]], [statusRows]] = await Promise.all([
+            db.query(
+                `SELECT a.*, e.title as event_title, u.name as checked_in_by_name
+                 ${baseFrom}
+                 ${listWhere}
+                 ORDER BY a.created_at DESC
+                 LIMIT ? OFFSET ?`,
+                [...listParams, pageSize, offset]
+            ),
+            db.query(
+                `SELECT COUNT(*) AS total ${baseFrom} ${listWhere}`,
+                listParams
+            ),
+            // status_counts ignores the status filter (uses `where` not
+            // `listWhere`) so the stat cards show the real totals.
+            db.query(
+                `SELECT a.status, COUNT(*) AS c ${baseFrom} ${where} GROUP BY a.status`,
+                baseParams
+            ),
+        ]);
+
+        const status_counts = { all: 0, confirmed: 0, checked_in: 0, cancelled: 0, registered: 0 };
+        statusRows.forEach(r => {
+            const key = (r.status || '').toLowerCase();
+            const n = Number(r.c) || 0;
+            if (key in status_counts) status_counts[key] = n;
+            status_counts.all += n;
+        });
+
+        res.json({
+            rows,
+            total: Number(totalRow?.total || 0),
+            page,
+            pageSize,
+            status_counts,
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -288,6 +414,16 @@ router.post('/import', guard, upload.single('file'), async (req, res) => {
                     return !existingSet.has(key);
                 });
                 const skipped = attendees.length - newAttendees.length;
+
+                // Plan-limit check on the dedup'd row count — duplicates don't count
+                // toward quota since they aren't inserted.
+                if (newAttendees.length > 0) {
+                    const cap = await capacityCheck(tenantId, 'attendees', newAttendees.length);
+                    if (!cap.ok) {
+                        try { fs.unlinkSync(req.file.path); } catch {}
+                        return res.status(cap.status).json(cap.body);
+                    }
+                }
 
                 if (newAttendees.length > 0) {
                     const query = 'INSERT INTO attendees (tenant_id, name, email, phone, company, designation, ticket_type, status, notes, event_id, created_by, checkin_token) VALUES ?';
@@ -440,43 +576,104 @@ const templateGuard = [protect, requireSection('attendees'), requireAdminOrManag
 // GET /api/attendees/email-template — returns the merged template (saved on
 // top of defaults) plus the defaults and the variable list, so the editor
 // can render placeholders, the "Reset" button, and the variable chips.
+// Optional ?event_id=N scopes to that event's override (falling back to
+// the tenant default if no override exists yet). Without event_id the
+// caller is editing the tenant-wide default.
 router.get('/email-template', templateGuard, async (req, res) => {
     try {
+        const eventId = req.query.event_id ? Number(req.query.event_id) : null;
+        if (eventId) {
+            const event = await loadEventTemplate(req.tenantId, eventId);
+            const tenant = await loadTenantTemplate(req.tenantId);
+            // Editor seeds with: event override if present, otherwise the
+            // tenant default (so operators can iterate on top of the
+            // tenant template rather than restart from blank defaults).
+            const seed = event || tenant || null;
+            return res.json({
+                template: mergeTemplate(seed),
+                defaults: DEFAULT_TEMPLATE,
+                variables: TEMPLATE_VARIABLES,
+                is_customised: !!event,        // CUSTOMISED badge reflects event-level
+                scope: 'event',
+                event_id: eventId,
+                inherits_from_tenant: !event && !!tenant,
+            });
+        }
         const saved = await loadTenantTemplate(req.tenantId);
         res.json({
             template: mergeTemplate(saved),
             defaults: DEFAULT_TEMPLATE,
             variables: TEMPLATE_VARIABLES,
             is_customised: !!saved,
+            scope: 'tenant',
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // PUT /api/attendees/email-template — save (or partially update) the
-// tenant's template. Pass `{ template: null }` to reset to defaults.
+// template. Optional ?event_id=N saves it as an event-level override;
+// without it, saves to the tenant default. Pass `{ template: null }` to
+// reset (deletes the event override OR the tenant settings row).
 router.put('/email-template', templateGuard, async (req, res) => {
     try {
+        const eventId = req.query.event_id ? Number(req.query.event_id) : null;
         const incoming = req.body?.template;
         if (incoming === null) {
+            if (eventId) {
+                // Reset event override → falls back to tenant default.
+                const [r] = await db.query(
+                    'UPDATE events SET confirmation_email_template = NULL WHERE id = ? AND tenant_id = ?',
+                    [eventId, req.tenantId]
+                );
+                if (r.affectedRows === 0) return res.status(404).json({ error: 'Event not found' });
+                return res.json({ ok: true, template: DEFAULT_TEMPLATE, is_customised: false, scope: 'event', event_id: eventId });
+            }
             await db.query('DELETE FROM settings WHERE tenant_id = ? AND setting_key = ?', [req.tenantId, TEMPLATE_KEY]);
-            return res.json({ ok: true, template: DEFAULT_TEMPLATE, is_customised: false });
+            return res.json({ ok: true, template: DEFAULT_TEMPLATE, is_customised: false, scope: 'tenant' });
         }
         if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
             return res.status(400).json({ error: 'template must be an object or null' });
         }
-        // Whitelist only the keys the renderer knows about — silently drop
-        // anything else so a stale field can't bloat the row over time.
         const cleaned = {};
         for (const k of Object.keys(DEFAULT_TEMPLATE)) {
             if (Object.prototype.hasOwnProperty.call(incoming, k)) cleaned[k] = incoming[k];
         }
         const merged = mergeTemplate(cleaned);
+
+        if (eventId) {
+            const [r] = await db.query(
+                'UPDATE events SET confirmation_email_template = ? WHERE id = ? AND tenant_id = ?',
+                [JSON.stringify(merged), eventId, req.tenantId]
+            );
+            if (r.affectedRows === 0) return res.status(404).json({ error: 'Event not found' });
+            return res.json({ ok: true, template: merged, is_customised: true, scope: 'event', event_id: eventId });
+        }
         await db.query(
             'INSERT INTO settings (tenant_id, setting_key, setting_value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
             [req.tenantId, TEMPLATE_KEY, JSON.stringify(merged)]
         );
-        res.json({ ok: true, template: merged, is_customised: true });
+        res.json({ ok: true, template: merged, is_customised: true, scope: 'tenant' });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/attendees/email-template/header-image — upload the banner
+// image rendered at the top of the confirmation email. Returns the
+// public URL the caller can drop into `template.header_image_url`.
+// Storage is shared with all other tenant uploads — multer + disk/S3 via
+// createUpload, max 4MB so the email doesn't balloon past inbox limits.
+const headerImageUpload = createUpload('email-header', { limits: { fileSize: 4 * 1024 * 1024 }, source: 'email-templates' });
+router.post('/email-template/header-image', templateGuard, headerImageUpload.single('image'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        if (!req.file.mimetype || !req.file.mimetype.startsWith('image/')) {
+            return res.status(400).json({ error: 'File must be an image' });
+        }
+        const url = fileUrl(req.file);
+        if (!url) return res.status(500).json({ error: 'Failed to resolve upload URL' });
+        res.json({ url });
+    } catch (err) {
+        res.status(500).json({ error: err.message || 'Upload failed' });
+    }
 });
 
 // POST /api/attendees/email-template/test — send a test email to the current
@@ -488,19 +685,36 @@ router.post('/email-template/test', templateGuard, async (req, res) => {
         const targetEmail = (req.body?.to || req.user.email || '').trim();
         if (!targetEmail) return res.status(400).json({ error: 'no email on file to send the test to' });
 
+        const eventId = req.body?.event_id ? Number(req.body.event_id) : null;
         const draft = (req.body?.template && typeof req.body.template === 'object') ? req.body.template : null;
-        const tpl = mergeTemplate(draft || (await loadTenantTemplate(req.tenantId)));
+        // When no draft is sent, fall back to whichever saved template
+        // would apply: event-scoped first, then tenant default.
+        let saved = null;
+        if (!draft) {
+            const resolved = await resolveTemplate(req.tenantId, eventId);
+            saved = resolved.template;
+        }
+        const tpl = mergeTemplate(draft || saved);
 
         const [[tenant]] = await db.query('SELECT name FROM tenants WHERE id = ?', [req.tenantId]);
-        // Sample data so the placeholders render with realistic content.
-        const sampleAttendee = { name: req.user.name || 'Sample Delegate', ticket_type: 'vip', status: 'confirmed' };
-        const sampleEvent = {
+        // If a real event was specified, use its data in the sample so the
+        // operator sees realistic event_title / venue / dates. Otherwise
+        // fall back to canned sample data.
+        let sampleEvent = {
             title: 'Annual Tech Summit 2026',
             start_date: '2026-09-12',
             end_date: '2026-09-13',
             venue: 'Bharat Mandapam, New Delhi',
             primary_color: tpl.brand_color || '#8b5cf6',
         };
+        if (eventId) {
+            const [[evt]] = await db.query(
+                'SELECT title, start_date, end_date, venue, primary_color FROM events WHERE id = ? AND tenant_id = ?',
+                [eventId, req.tenantId]
+            );
+            if (evt) sampleEvent = { ...evt, primary_color: evt.primary_color || tpl.brand_color || '#8b5cf6' };
+        }
+        const sampleAttendee = { name: req.user.name || 'Sample Delegate', ticket_type: 'vip', status: 'confirmed' };
         // Throwaway QR for the test send so operators see the rendered
         // check-in panel without us having to invent an attendee row.
         const sampleToken = genCheckinToken();
@@ -814,7 +1028,9 @@ router.get('/:id/email-preview', guard, async (req, res) => {
         }
 
         const [[tenant]] = await db.query('SELECT name FROM tenants WHERE id = ?', [req.tenantId]);
-        const tpl = mergeTemplate(await loadTenantTemplate(req.tenantId));
+        // Per-event template wins, then tenant default, then built-in defaults.
+        const { template } = await resolveTemplate(req.tenantId, attendee.event_id);
+        const tpl = mergeTemplate(template);
         const eventCtx = {
             title: attendee.event_title,
             start_date: attendee.start_date,
@@ -880,8 +1096,9 @@ router.post('/:id/send-confirmation', guard, async (req, res) => {
         }
 
         const [[tenant]] = await db.query('SELECT name FROM tenants WHERE id = ?', [req.tenantId]);
-        const saved = await loadTenantTemplate(req.tenantId);
-        const tpl = mergeTemplate(saved);
+        // Per-event template wins, then tenant default, then built-in defaults.
+        const { template } = await resolveTemplate(req.tenantId, attendee.event_id);
+        const tpl = mergeTemplate(template);
         const eventCtx = {
             title: attendee.event_title,
             start_date: attendee.start_date,
@@ -915,5 +1132,130 @@ router.post('/:id/send-confirmation', guard, async (req, res) => {
         res.status(500).json({ error: err.message || 'Failed to send confirmation email' });
     }
 });
+
+// POST /api/attendees/:id/send-certificate — email a generated certificate
+// PNG to an attendee. Body is multipart with a `certificate` file field
+// (the PNG rendered by BulkCertificatePage). Uses the per-event
+// certificate_email_template if set, otherwise a hardcoded default.
+router.post('/:id/send-certificate', guard, certUpload.single('certificate'), async (req, res) => {
+    // Persist one row to cert_send_log per attempt. Best-effort: the log
+    // write must never break the send response, so failures here just get
+    // console.error'd and we move on.
+    const logSend = async ({ event_id, attendee_id, attendee_name, attendee_email, status, reason }) => {
+        try {
+            await db.query(
+                `INSERT INTO cert_send_log
+                 (tenant_id, event_id, attendee_id, attendee_name, attendee_email, status, reason, sent_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [req.tenantId, event_id || null, attendee_id || null, attendee_name || null,
+                 attendee_email || null, status, reason ? String(reason).slice(0, 250) : null, req.user?.id || null]
+            );
+        } catch (e) { console.error('cert_send_log insert failed:', e.message); }
+    };
+
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No certificate file provided' });
+
+        const [[attendee]] = await db.query(
+            `SELECT a.*, e.title AS event_title, e.start_date, e.end_date, e.certificate_email_template, e.created_by AS event_created_by
+             FROM attendees a
+             LEFT JOIN events e ON a.event_id = e.id AND e.tenant_id = a.tenant_id
+             WHERE a.id = ? AND a.tenant_id = ? AND a.deleted_at IS NULL`,
+            [req.params.id, req.tenantId]
+        );
+        if (!attendee) return res.status(404).json({ error: 'Attendee not found' });
+
+        // Same scope rules as send-confirmation.
+        if (req.user.role === 'manager') {
+            const ok = attendee.event_created_by === req.user.id ||
+                       assignedIdsOf(req.user).includes(Number(attendee.event_id));
+            if (!ok) return res.status(403).json({ error: 'You do not own this attendee' });
+        } else if (req.user.role === 'employee') {
+            if (!employeeAllowed(req, attendee.event_id)) {
+                return res.status(403).json({ error: 'You can only email attendees in your assigned event' });
+            }
+        }
+
+        if (!attendee.email) {
+            await logSend({
+                event_id: attendee.event_id, attendee_id: attendee.id,
+                attendee_name: attendee.name, attendee_email: null,
+                status: 'skipped', reason: 'no email on file',
+            });
+            return res.status(400).json({ error: 'Attendee has no email on file' });
+        }
+
+        // Resolve the email template — saved template wins, otherwise a
+        // sensible default. Variables: {{name}}, {{event_title}}, {{event_date}}.
+        const saved = attendee.certificate_email_template;
+        const parsed = saved ? (typeof saved === 'string' ? JSON.parse(saved) : saved) : null;
+        const subjectTmpl = parsed?.subject || 'Your certificate from {{event_title}}';
+        const bodyTmpl    = parsed?.body    || 'Hi {{name}},\n\nThank you for being part of {{event_title}}. Your certificate is attached.\n\nBest regards,\nThe team';
+
+        const vars = {
+            name: attendee.name || 'there',
+            event_title: attendee.event_title || 'the event',
+            event_date: formatEventDateRange(attendee.start_date, attendee.end_date),
+        };
+        const fill = (s) => String(s).replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? '');
+
+        const subject = fill(subjectTmpl);
+        // Wrap plain-text body in <pre>-equivalent HTML so newlines render.
+        // Operators who already write HTML in the editor can — the
+        // substitution doesn't touch tags.
+        const bodyHtml = fill(bodyTmpl).replace(/\n/g, '<br>');
+
+        const html = `<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:560px;margin:0 auto;padding:32px 24px;color:#1e293b;line-height:1.55;font-size:15px;">${bodyHtml}</div>`;
+
+        const safeName = (attendee.name || 'certificate').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+        const attachments = [{
+            filename: `certificate-${safeName}.png`,
+            content: req.file.buffer,
+            contentType: req.file.mimetype || 'image/png',
+        }];
+
+        const result = await sendMail({ to: attendee.email, subject, html, tenantId: req.tenantId, attachments });
+        if (result?.skipped) {
+            await logSend({
+                event_id: attendee.event_id, attendee_id: attendee.id,
+                attendee_name: attendee.name, attendee_email: attendee.email,
+                status: 'skipped', reason: result.reason || 'mailer skipped',
+            });
+            return res.json({ ok: false, sent: false, skipped: result.reason });
+        }
+        await logSend({
+            event_id: attendee.event_id, attendee_id: attendee.id,
+            attendee_name: attendee.name, attendee_email: attendee.email,
+            status: 'sent', reason: null,
+        });
+        res.json({ ok: true, sent: true, to: attendee.email });
+    } catch (err) {
+        console.error('send-certificate failed:', err);
+        // We may not have the attendee row in scope here, so this best-
+        // effort entry just records what we know — the URL id + the error.
+        await logSend({
+            event_id: null, attendee_id: Number(req.params.id) || null,
+            attendee_name: null, attendee_email: null,
+            status: 'failed', reason: err.message || 'unknown error',
+        });
+        res.status(500).json({ error: err.message || 'Failed to send certificate' });
+    }
+});
+
+// Small date-range formatter — "5 May 2026" for single-day events,
+// "5–7 May 2026" for multi-day. Keeps the email body terse.
+function formatEventDateRange(start, end) {
+    if (!start) return '';
+    const s = new Date(start);
+    if (Number.isNaN(s.getTime())) return '';
+    const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    if (!end || end === start) return fmt(s);
+    const e = new Date(end);
+    if (Number.isNaN(e.getTime())) return fmt(s);
+    const sameMonth = s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear();
+    return sameMonth
+        ? `${s.getDate()}–${e.getDate()} ${e.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`
+        : `${fmt(s)} – ${fmt(e)}`;
+}
 
 module.exports = router;

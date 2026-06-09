@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense, memo } from 'react';
-import { BsChatDots, BsX, BsArrowLeft, BsSendFill, BsSearch, BsPlus, BsPeopleFill, BsPaperclip, BsImage, BsFileEarmark, BsDownload, BsFileEarmarkPdf, BsFileEarmarkMusic, BsFileEarmarkPlay, BsThreeDotsVertical, BsReply, BsTrash, BsClipboard, BsEmojiSmile, BsPersonBadge, BsCheckCircleFill, BsInfoCircle, BsLink45Deg, BsImages, BsPencilSquare, BsCheck2, BsShare, BsCrop, BsPinAngleFill, BsPinAngle, BsPin } from 'react-icons/bs';
+import { BsChatDots, BsX, BsArrowLeft, BsSendFill, BsSearch, BsPlus, BsPeopleFill, BsPaperclip, BsImage, BsFileEarmark, BsDownload, BsFileEarmarkPdf, BsFileEarmarkMusic, BsFileEarmarkPlay, BsThreeDotsVertical, BsReply, BsTrash, BsClipboard, BsEmojiSmile, BsPersonBadge, BsCheckCircleFill, BsInfoCircle, BsLink45Deg, BsImages, BsPencilSquare, BsCheck2, BsShare, BsCrop, BsPinAngleFill, BsPinAngle, BsPin, BsStars, BsScissors } from 'react-icons/bs';
 
 // react-cropper + cropperjs is ~120 KB — code-split it so it only loads
 // when the user actually opens the crop UI, not on every chat open.
@@ -15,6 +15,7 @@ import {
     getUsers, getEvents, createQuickSpeaker, updateMyProfile,
     togglePinMessage, getPinnedMessages, searchChatMessages, clearChatForMe
 } from '../services/api';
+import { usePhotoOps } from '../hooks/usePhotoOps';
 import { useNavigate } from 'react-router-dom';
 
 const initials = (name = '') => name.split(/\s+/).map(p => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
@@ -2145,12 +2146,18 @@ function ForwardModal({ message, conversations, groups, currentUser, onClose, on
 
 function MyProfileModal({ user, onClose, onSaved }) {
     const [name, setName] = useState(user.name || '');
+    const [email, setEmail] = useState(user.email || '');
+    // `currentPassword` is only required when the user actually changes
+    // their email — the modal hides the field until they edit the address.
+    const [currentPassword, setCurrentPassword] = useState('');
     const [photo, setPhoto] = useState(null);
     const [preview, setPreview] = useState(user.profile_photo_url ? getImageUrl(user.profile_photo_url) : '');
     const [removePhoto, setRemovePhoto] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
     const inputRef = useRef(null);
+
+    const emailChanged = email.trim().toLowerCase() !== (user.email || '').trim().toLowerCase();
 
     const handleFile = (e) => {
         const f = e.target.files?.[0];
@@ -2169,10 +2176,20 @@ function MyProfileModal({ user, onClose, onSaved }) {
 
     const save = async () => {
         if (!name.trim()) return setError('Name is required');
+        if (emailChanged) {
+            if (!email.trim()) return setError('Email cannot be empty');
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError('Enter a valid email address');
+            if (!currentPassword) return setError('Enter your current password to change your email');
+        }
         setError('');
         setSaving(true);
         try {
-            const r = await updateMyProfile({ name: name.trim(), photo, removePhoto });
+            const r = await updateMyProfile({
+                name: name.trim(),
+                photo, removePhoto,
+                email: emailChanged ? email.trim() : undefined,
+                currentPassword: emailChanged ? currentPassword : undefined,
+            });
             onSaved?.(r.data);
         } catch (err) {
             setError(err.response?.data?.error || 'Failed to save');
@@ -2243,8 +2260,23 @@ function MyProfileModal({ user, onClose, onSaved }) {
                     <input value={name} onChange={e => setName(e.target.value)}
                         style={{ ...inputStyle, padding: '8px 10px' }} />
                 </div>
+                <div style={{ marginTop: 10 }}>
+                    <label style={{ fontSize: 11, opacity: 0.7, display: 'block', marginBottom: 4 }}>Email address</label>
+                    <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                        style={{ ...inputStyle, padding: '8px 10px' }} />
+                </div>
+                {emailChanged && (
+                    <div style={{ marginTop: 10 }}>
+                        <label style={{ fontSize: 11, opacity: 0.7, display: 'block', marginBottom: 4 }}>
+                            Current password <span style={{ color: '#f59e0b' }}>(required to change email)</span>
+                        </label>
+                        <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)}
+                            autoComplete="current-password"
+                            style={{ ...inputStyle, padding: '8px 10px' }} />
+                    </div>
+                )}
                 <div style={{ fontSize: 10, opacity: 0.5, marginTop: 8 }}>
-                    {user.email} · {user.role}
+                    {user.role}
                 </div>
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 14 }}>
                     <button onClick={onClose}
@@ -2757,6 +2789,18 @@ function ShareSpeakerModal({ onClose, onSubmit }) {
         }, 'image/png', 0.92);
     };
 
+    // Photo ops (Enhance / Remove BG). Source is whatever's in the cropper
+    // right now; result re-enters the cropper as a fresh data URL so the
+    // user can re-frame.
+    const { photoOp, error: cropOpError, runEnhance: handleEnhance, runRemoveBg: handleRemoveBackground } = usePhotoOps({
+        getSource: () => cropSrc,
+        onResult: (blob) => new Promise(resolve => {
+            const reader = new FileReader();
+            reader.onload = () => { setCropSrc(reader.result); resolve(); };
+            reader.readAsDataURL(blob);
+        }),
+    });
+
     const handleSubmit = async () => {
         setError('');
         if (!name.trim() || !designation.trim() || !company.trim() || !eventId || !photo) {
@@ -2772,8 +2816,15 @@ function ShareSpeakerModal({ onClose, onSubmit }) {
         }
     };
 
+    // Treat the form as "dirty" once the user has typed anything or loaded
+    // a photo. While dirty, backdrop clicks are ignored — the X button is
+    // the only way to discard work, so an accidental click outside doesn't
+    // wipe the form. Empty form: backdrop closes as usual.
+    const isDirty = !!(name.trim() || designation.trim() || company.trim() || eventId || photo || preview || cropSrc);
+    const handleBackdropClick = () => { if (!isDirty) onClose(); };
+
     return (
-        <div onClick={onClose} data-chat-scope
+        <div onClick={handleBackdropClick} data-chat-scope
             style={{
                 position: 'absolute', inset: 0, zIndex: 20,
                 background: 'rgba(0,0,0,0.55)',
@@ -2848,7 +2899,10 @@ function ShareSpeakerModal({ onClose, onSubmit }) {
             </div>
 
             {cropSrc && (
-                <div onClick={(e) => { e.stopPropagation(); setCropSrc(null); }}
+                // Backdrop swallows the click but does NOT close the cropper —
+                // the user must use the X button (top right) or Cancel. Avoids
+                // wiping in-progress crop/enhance work on a stray outside click.
+                <div onClick={(e) => e.stopPropagation()}
                     style={{
                         position: 'absolute', inset: 0, zIndex: 30,
                         background: 'rgba(0,0,0,0.85)',
@@ -2889,19 +2943,54 @@ function ShareSpeakerModal({ onClose, onSubmit }) {
                                 guides={true}
                             />
                         </Suspense>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-                            <button onClick={() => setCropSrc(null)}
-                                style={{
-                                    padding: '6px 12px', border: '1px solid rgba(255,255,255,0.12)',
-                                    background: 'transparent', color: 'rgba(255,255,255,0.7)',
-                                    borderRadius: 6, fontSize: 12, cursor: 'pointer'
-                                }}>Cancel</button>
-                            <button onClick={confirmCrop}
-                                style={{
-                                    padding: '6px 12px', border: 'none',
-                                    background: 'linear-gradient(135deg, #8b5cf6, #6366f1)',
-                                    color: '#fff', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer'
-                                }}>Use this crop</button>
+                        {cropOpError && (
+                            <div style={{
+                                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
+                                color: '#f87171', padding: '6px 10px', borderRadius: 6, fontSize: 11
+                            }}>{cropOpError}</div>
+                        )}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }}>
+                            {/* Cutout.pro ops — operate on the image in the cropper.
+                                Result re-loads into the same cropper. */}
+                            <div style={{ display: 'flex', gap: 6 }}>
+                                <button onClick={handleEnhance} disabled={!!photoOp}
+                                    title="Auto-enhance the current photo (sharpen + upscale)."
+                                    style={{
+                                        padding: '6px 10px', border: '1px solid rgba(139,92,246,0.55)',
+                                        background: 'transparent', color: '#a78bfa',
+                                        borderRadius: 6, fontSize: 11, fontWeight: 600,
+                                        cursor: photoOp ? 'wait' : 'pointer', opacity: photoOp ? 0.6 : 1,
+                                        display: 'inline-flex', alignItems: 'center', gap: 4
+                                    }}>
+                                    <BsStars /> {photoOp === 'enhance' ? 'Enhancing…' : 'Enhance'}
+                                </button>
+                                <button onClick={handleRemoveBackground} disabled={!!photoOp}
+                                    title="Remove background. Returns a transparent PNG."
+                                    style={{
+                                        padding: '6px 10px', border: '1px solid rgba(19,217,153,0.55)',
+                                        background: 'transparent', color: '#13d999',
+                                        borderRadius: 6, fontSize: 11, fontWeight: 600,
+                                        cursor: photoOp ? 'wait' : 'pointer', opacity: photoOp ? 0.6 : 1,
+                                        display: 'inline-flex', alignItems: 'center', gap: 4
+                                    }}>
+                                    <BsScissors /> {photoOp === 'remove-bg' ? 'Removing…' : 'Remove BG'}
+                                </button>
+                            </div>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                                <button onClick={() => setCropSrc(null)} disabled={!!photoOp}
+                                    style={{
+                                        padding: '6px 12px', border: '1px solid rgba(255,255,255,0.12)',
+                                        background: 'transparent', color: 'rgba(255,255,255,0.7)',
+                                        borderRadius: 6, fontSize: 12, cursor: photoOp ? 'wait' : 'pointer'
+                                    }}>Cancel</button>
+                                <button onClick={confirmCrop} disabled={!!photoOp}
+                                    style={{
+                                        padding: '6px 12px', border: 'none',
+                                        background: 'linear-gradient(135deg, #8b5cf6, #6366f1)',
+                                        color: '#fff', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                                        cursor: photoOp ? 'wait' : 'pointer', opacity: photoOp ? 0.6 : 1
+                                    }}>Use this crop</button>
+                            </div>
                         </div>
                     </div>
                 </div>

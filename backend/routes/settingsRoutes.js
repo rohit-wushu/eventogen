@@ -4,7 +4,7 @@ const db = require('../config/db');
 const { protect } = require('../middleware/authMiddleware');
 const { createUpload, fileUrl } = require('../utils/storage');
 
-const upload = createUpload('logo');
+const upload = createUpload('logo', { source: 'settings' });
 
 // GET all settings — now tenant-scoped, so it requires auth to know the tenant.
 router.get('/', protect, async (req, res) => {
@@ -50,7 +50,7 @@ router.post('/logo', protect, upload.single('logo'), async (req, res) => {
 });
 
 // POST to update favicon (admin only)
-const faviconUpload = createUpload('favicon');
+const faviconUpload = createUpload('favicon', { source: 'settings' });
 
 router.post('/favicon', protect, faviconUpload.single('favicon'), async (req, res) => {
     if (req.user.role !== 'admin') {

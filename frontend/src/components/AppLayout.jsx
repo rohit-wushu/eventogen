@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate, useLocation, Navigate } from 'react-route
 import { Nav, Button, Modal, Form, Spinner, Alert } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import { getSettings, updateSetting, changePassword, getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead, getMySubscription, getActiveAnnouncements } from '../services/api';
-import { BsCalendarEvent, BsPeople, BsPersonBadge, BsBriefcase, BsListTask, BsSpeedometer2, BsBoxArrowRight, BsPeopleFill, BsAirplane, BsGear, BsPerson, BsKey, BsBell, BsSun, BsMoon, BsCheck2All, BsTrash, BsCircleFill, BsImages, BsTrophy, BsBuilding, BsCreditCard2Front, BsShieldLockFill, BsBarChart, BsReceipt, BsStars, BsMegaphone, BsList, BsCardChecklist, BsEnvelope, BsAward, BsTools, BsArchive } from 'react-icons/bs';
+import { BsCalendarEvent, BsPeople, BsPersonBadge, BsBriefcase, BsListTask, BsSpeedometer2, BsBoxArrowRight, BsPeopleFill, BsAirplane, BsGear, BsPerson, BsKey, BsBell, BsSun, BsMoon, BsCheck2All, BsTrash, BsCircleFill, BsImages, BsTrophy, BsBuilding, BsCreditCard2Front, BsShieldLockFill, BsBarChart, BsReceipt, BsStars, BsMegaphone, BsList, BsCardChecklist, BsEnvelope, BsAward, BsTools, BsArchive, BsShare } from 'react-icons/bs';
 import { AnnouncementBanner } from '../pages/PlatformConsolePage';
 import { getImageUrl } from '../utils/imageUrl';
 import GlobalSearch from './GlobalSearch';
@@ -23,6 +23,7 @@ const menuItems = [
     { path: '/users', label: 'Users', icon: BsPeople, roles: ['admin', 'manager'] },
     { path: '/recycle-bin', label: 'Recycle Bin', icon: BsArchive, roles: ['admin', 'manager'] },
     { path: '/organization', label: 'Organization', icon: BsBuilding, roles: ['admin', 'manager'] },
+    { path: '/social-accounts', label: 'Social Accounts', icon: BsShare, roles: ['admin', 'manager'] },
     { path: '/billing', label: 'Billing', icon: BsReceipt, roles: ['admin', 'manager'] },
     { path: '/payment-settings', label: 'Payments', icon: BsCreditCard2Front, roles: ['admin'] },
     { path: '/settings', label: 'Settings', icon: BsGear, roles: ['admin'] },
@@ -685,6 +686,9 @@ export default function AppLayout() {
                                 </Nav.Link>
                                 <Nav.Link as={NavLink} to="/platform/announcements" className="d-flex align-items-center gap-3">
                                     <BsMegaphone size={16} /> Announcements
+                                </Nav.Link>
+                                <Nav.Link as={NavLink} to="/platform/profile" className="d-flex align-items-center gap-3">
+                                    <BsPerson size={16} /> My Profile
                                 </Nav.Link>
                             </>
                         )}

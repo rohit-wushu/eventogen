@@ -10,7 +10,7 @@ const guard = [protect, requireSection('awards')];
 const { notifyAdminsAndManagers } = require('../utils/notify');
 const { createUpload, fileUrl } = require('../utils/storage');
 
-const upload = createUpload((req, file) => `award-${file.fieldname}`);
+const upload = createUpload((req, file) => `award-${file.fieldname}`, { source: 'awards' });
 const uploadFields = upload.fields([{ name: 'photo', maxCount: 1 }, { name: 'company_logo', maxCount: 1 }]);
 
 // Multi-event aware access. The local `employeeAllowed` shim also enforces
