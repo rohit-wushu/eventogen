@@ -44,7 +44,7 @@ import RecycleBinPage from './pages/RecycleBinPage';
 import {
     PlatformDashboardPage, PlatformOrganizationsPage,
     PlatformInvoicesPage, PlatformPlansPage, PlatformAnnouncementsPage,
-    PlatformProfilePage,
+    PlatformProfilePage, PlatformBrandingPage,
 } from './pages/PlatformConsolePage';
 import 'bootstrap/dist/css/bootstrap.min.css';
 
@@ -137,6 +137,7 @@ function AppRoutes() {
                 <Route path="/platform/plans" element={<ProtectedRoute superAdminOnly><PlatformPlansPage /></ProtectedRoute>} />
                 <Route path="/platform/announcements" element={<ProtectedRoute superAdminOnly><PlatformAnnouncementsPage /></ProtectedRoute>} />
                 <Route path="/platform/profile" element={<ProtectedRoute superAdminOnly><PlatformProfilePage /></ProtectedRoute>} />
+                <Route path="/platform/branding" element={<ProtectedRoute superAdminOnly><PlatformBrandingPage /></ProtectedRoute>} />
             </Route>
 
             <Route path="*" element={<Navigate to={user?.is_super_admin ? '/platform' : '/dashboard'} />} />

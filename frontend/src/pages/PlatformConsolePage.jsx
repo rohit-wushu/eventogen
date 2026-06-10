@@ -8,7 +8,9 @@ import {
     getPlatformAnalytics, getPlatformAnnouncements, createPlatformAnnouncement,
     updatePlatformAnnouncement, deletePlatformAnnouncement, uploadAnnouncementPoster,
     updateMyProfile,
+    getBranding, updateBranding, updateBrandingLogo, updateBrandingFavicon,
 } from '../services/api';
+import { invalidateBrandingCache } from '../hooks/useBranding';
 import { useAuth } from '../context/AuthContext';
 import { getImageUrl } from '../utils/imageUrl';
 import {
@@ -18,6 +20,7 @@ import {
     BsKey, BsCheckCircleFill, BsEye, BsEyeSlash,
     BsGraphUpArrow, BsTrash, BsPlusLg, BsBellFill, BsAward,
     BsPersonCircle, BsEnvelopeAtFill, BsLock, BsSave, BsExclamationTriangleFill,
+    BsPalette, BsImage, BsCardImage, BsFileEarmarkText,
 } from 'react-icons/bs';
 import {
     LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -56,6 +59,9 @@ export function PlatformAnnouncementsPage() {
 }
 export function PlatformProfilePage() {
     return <PageShell icon={BsPersonCircle} title="My Profile"><ProfileTab /></PageShell>;
+}
+export function PlatformBrandingPage() {
+    return <PageShell icon={BsPalette} title="Branding"><BrandingTab /></PageShell>;
 }
 
 // Kept as the default export for backwards compat if anything else imports it.
@@ -260,6 +266,208 @@ function ProfileTab() {
                     <div><span style={{ color: 'var(--text-muted)' }}>Role:</span> <strong style={{ color: 'var(--text-primary)' }}>{user?.role}</strong></div>
                     <div><Badge bg="danger">Super Admin</Badge></div>
                 </div>
+            </div>
+        </div>
+    );
+}
+
+// ───────────────── Platform Branding ─────────────────
+//
+// Super-admin-owned global branding shown on the login page + every browser tab
+// (favicon + meta title/description). Tenant-level branding lives in
+// /api/settings — this is a completely separate platform-wide set keyed by
+// settings.tenant_id IS NULL.
+function BrandingTab() {
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [form, setForm] = useState({
+        site_title: '', portal_tagline: '',
+        hero_headline: '', hero_sub: '',
+        meta_title: '', meta_description: '',
+        portal_logo: '', favicon: ''
+    });
+
+    useEffect(() => {
+        getBranding().then(r => {
+            const d = r.data || {};
+            setForm(f => ({ ...f, ...d }));
+        }).finally(() => setLoading(false));
+    }, []);
+
+    const handleSave = async () => {
+        setSaving(true); setMsg(null);
+        try {
+            await updateBranding({
+                site_title: form.site_title,
+                portal_tagline: form.portal_tagline,
+                hero_headline: form.hero_headline,
+                hero_sub: form.hero_sub,
+                meta_title: form.meta_title,
+                meta_description: form.meta_description
+            });
+            invalidateBrandingCache();
+            setMsg({ type: 'success', text: 'Branding updated — refresh any open tabs to see the new values.' });
+        } catch (err) {
+            setMsg({ type: 'danger', text: err.response?.data?.error || 'Save failed' });
+        } finally { setSaving(false); }
+    };
+
+    const handleUpload = async (kind, file) => {
+        if (!file) return;
+        const data = new FormData();
+        data.append(kind === 'logo' ? 'logo' : 'favicon', file);
+        try {
+            const fn = kind === 'logo' ? updateBrandingLogo : updateBrandingFavicon;
+            const r = await fn(data);
+            const key = kind === 'logo' ? 'portal_logo' : 'favicon';
+            setForm(f => ({ ...f, [key]: r.data.url }));
+            invalidateBrandingCache();
+            setMsg({ type: 'success', text: `${kind === 'logo' ? 'Logo' : 'Favicon'} uploaded.` });
+        } catch (err) {
+            setMsg({ type: 'danger', text: err.response?.data?.error || 'Upload failed' });
+        }
+    };
+
+    if (loading) return <div className="p-5 text-center"><Spinner animation="border" /></div>;
+
+    const card = {
+        background: 'var(--bg-card, #fff)', border: '1px solid var(--border-subtle, #e5e7eb)',
+        borderRadius: 14, padding: 20, marginBottom: 18
+    };
+    const label = { fontSize: 12, fontWeight: 700, color: 'var(--text-muted, #6b7280)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
+    const help  = { fontSize: 12, color: 'var(--text-muted, #6b7280)', marginTop: 4 };
+
+    return (
+        <div style={{ maxWidth: 880 }}>
+            {msg && <Alert variant={msg.type} onClose={() => setMsg(null)} dismissible>{msg.text}</Alert>}
+
+            {/* Identity */}
+            <div style={card}>
+                <h6 className="d-flex align-items-center gap-2 mb-3" style={{ fontWeight: 700, color: 'var(--text-primary, #fff)' }}>
+                    <BsFileEarmarkText /> Identity
+                </h6>
+                <div className="row g-3">
+                    <div className="col-md-6">
+                        <div style={label}>Product name</div>
+                        <Form.Control size="sm" value={form.site_title}
+                            onChange={e => setForm({ ...form, site_title: e.target.value })}
+                            placeholder="EventHub" />
+                        <div style={help}>Shown in the sign-in title and the footer.</div>
+                    </div>
+                    <div className="col-md-6">
+                        <div style={label}>Tagline</div>
+                        <Form.Control size="sm" value={form.portal_tagline}
+                            onChange={e => setForm({ ...form, portal_tagline: e.target.value })}
+                            placeholder="Premium Speaker Suite" />
+                        <div style={help}>Small text under the logo on the marketing pane.</div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Hero copy */}
+            <div style={card}>
+                <h6 className="d-flex align-items-center gap-2 mb-3" style={{ fontWeight: 700, color: 'var(--text-primary, #fff)' }}>
+                    <BsStars /> Marketing pane (left side of login)
+                </h6>
+                <div className="mb-3">
+                    <div style={label}>Headline</div>
+                    <Form.Control size="sm" as="textarea" rows={2}
+                        value={form.hero_headline}
+                        onChange={e => setForm({ ...form, hero_headline: e.target.value })} />
+                    <div style={help}>Wrap a word in <code>*asterisks*</code> to italicize it (e.g. <code>*unforgettable*</code>).</div>
+                </div>
+                <div>
+                    <div style={label}>Sub-headline</div>
+                    <Form.Control size="sm" as="textarea" rows={3}
+                        value={form.hero_sub}
+                        onChange={e => setForm({ ...form, hero_sub: e.target.value })} />
+                </div>
+            </div>
+
+            {/* SEO / meta */}
+            <div style={card}>
+                <h6 className="d-flex align-items-center gap-2 mb-3" style={{ fontWeight: 700, color: 'var(--text-primary, #fff)' }}>
+                    <BsFileEarmarkText /> SEO & browser tab
+                </h6>
+                <div className="mb-3">
+                    <div style={label}>Browser tab title (meta title)</div>
+                    <Form.Control size="sm" value={form.meta_title}
+                        onChange={e => setForm({ ...form, meta_title: e.target.value })}
+                        placeholder="EventHub — Event Management Platform" />
+                    <div style={help}>Falls back to the product name above if empty.</div>
+                </div>
+                <div>
+                    <div style={label}>Meta description</div>
+                    <Form.Control size="sm" as="textarea" rows={2}
+                        value={form.meta_description}
+                        onChange={e => setForm({ ...form, meta_description: e.target.value })}
+                        placeholder="Manage speakers, partners, agendas..." />
+                    <div style={help}>Used by search engines and link previews. Aim for 140–160 characters.</div>
+                </div>
+            </div>
+
+            {/* Images */}
+            <div style={card}>
+                <h6 className="d-flex align-items-center gap-2 mb-3" style={{ fontWeight: 700, color: 'var(--text-primary, #fff)' }}>
+                    <BsImage /> Logo & favicon
+                </h6>
+                <div className="row g-4">
+                    <div className="col-md-6">
+                        <div style={label}>Logo</div>
+                        <div className="d-flex align-items-center gap-3">
+                            <div style={{
+                                width: 80, height: 80, borderRadius: 12,
+                                background: 'rgba(139,92,246,0.08)',
+                                border: '1px dashed rgba(148,163,184,0.4)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                overflow: 'hidden'
+                            }}>
+                                {form.portal_logo
+                                    ? <img src={getImageUrl(form.portal_logo)} alt="logo" style={{ maxWidth: '100%', maxHeight: '100%' }} />
+                                    : <BsCardImage size={28} style={{ color: '#94a3b8' }} />}
+                            </div>
+                            <div>
+                                <label className="btn btn-sm btn-outline-primary mb-0">
+                                    Upload logo
+                                    <input type="file" accept="image/*" hidden onChange={e => handleUpload('logo', e.target.files[0])} />
+                                </label>
+                                <div style={help}>PNG/SVG, transparent background recommended.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="col-md-6">
+                        <div style={label}>Favicon</div>
+                        <div className="d-flex align-items-center gap-3">
+                            <div style={{
+                                width: 48, height: 48, borderRadius: 8,
+                                background: 'rgba(139,92,246,0.08)',
+                                border: '1px dashed rgba(148,163,184,0.4)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                overflow: 'hidden'
+                            }}>
+                                {form.favicon
+                                    ? <img src={getImageUrl(form.favicon)} alt="favicon" style={{ maxWidth: '100%', maxHeight: '100%' }} />
+                                    : <BsCardImage size={20} style={{ color: '#94a3b8' }} />}
+                            </div>
+                            <div>
+                                <label className="btn btn-sm btn-outline-primary mb-0">
+                                    Upload favicon
+                                    <input type="file" accept="image/png,image/x-icon,image/svg+xml" hidden onChange={e => handleUpload('favicon', e.target.files[0])} />
+                                </label>
+                                <div style={help}>32×32 PNG or .ico. Shown in the browser tab.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div className="d-flex justify-content-end">
+                <Button onClick={handleSave} disabled={saving} className="d-flex align-items-center gap-2">
+                    {saving ? <Spinner size="sm" /> : <BsSave />}
+                    {saving ? 'Saving…' : 'Save text changes'}
+                </Button>
             </div>
         </div>
     );

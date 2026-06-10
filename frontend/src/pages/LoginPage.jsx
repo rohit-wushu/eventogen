@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Form, Alert, Spinner } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
-import { loginUser, forgotPassword, getSettings, signupTenant } from '../services/api';
+import { loginUser, forgotPassword, signupTenant } from '../services/api';
+import { useBranding } from '../hooks/useBranding';
 import { getImageUrl } from '../utils/imageUrl';
 import { BsArrowLeft, BsCheckCircleFill, BsEye, BsEyeSlash, BsArrowRight, BsStars, BsLightningChargeFill, BsShieldCheck, BsCalendarEvent, BsMic } from 'react-icons/bs';
 
@@ -21,19 +22,18 @@ export default function LoginPage() {
     const [forgotLoading, setForgotLoading] = useState(false);
     const [signupForm, setSignupForm] = useState({ org_name: '', name: '', email: '', password: '' });
     const [signupLoading, setSignupLoading] = useState(false);
-    const [brand, setBrand] = useState({ logo: '', title: 'EventHub', tagline: 'Premium Speaker Suite' });
-
-    useEffect(() => {
-        getSettings().then(r => {
-            setBrand(b => ({
-                ...b,
-                logo: r.data.portal_logo || '',
-                title: r.data.site_title || r.data.portal_name || b.title,
-                tagline: r.data.portal_tagline || b.tagline
-            }));
-            if (r.data.site_title) document.title = r.data.site_title;
-        }).catch(() => {});
-    }, []);
+    // useBranding fetches once globally, caches, and updates <head> (title,
+    // favicon, meta description). The shape returned matches the backing
+    // settings keys so the JSX below reads them directly.
+    const bx = useBranding();
+    const brand = {
+        logo: bx.portal_logo,
+        favicon: bx.favicon,
+        title: bx.site_title,
+        tagline: bx.portal_tagline,
+        heroHeadline: bx.hero_headline,
+        heroSub: bx.hero_sub
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault(); setError(''); setLoading(true);
@@ -110,11 +110,14 @@ export default function LoginPage() {
                         <BsStars /> New · AI-powered SNS cards
                     </div>
                     <h1 className="lx-headline">
-                        Everything you need to run <em>unforgettable</em> events.
+                        {/* Render *word* as <em>word</em> so super admins can keep the italic accent. */}
+                        {brand.heroHeadline.split(/(\*[^*]+\*)/g).map((p, i) =>
+                            p.startsWith('*') && p.endsWith('*') && p.length > 2
+                                ? <em key={i}>{p.slice(1, -1)}</em>
+                                : p
+                        )}
                     </h1>
-                    <p className="lx-sub">
-                        Manage speakers, partners, agendas and travel in one elegant, secure workspace — trusted by event teams worldwide.
-                    </p>
+                    <p className="lx-sub">{brand.heroSub}</p>
 
                     {/* Floating product preview cards */}
                     <div className="lx-previews">
@@ -358,7 +361,7 @@ export default function LoginPage() {
                 </div>
 
                 <div className="lx-right-foot">
-                    © {new Date().getFullYear()} EventHub · <span>Privacy</span> · <span>Terms</span> · <span>Support</span>
+                    © {new Date().getFullYear()} {brand.title} · <span>Privacy</span> · <span>Terms</span> · <span>Support</span>
                 </div>
             </main>
         </div>

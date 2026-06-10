@@ -450,6 +450,13 @@ export const updateLogo = (formData) => api.post('/settings/logo', formData);
 export const updateFavicon = (formData) => api.post('/settings/favicon', formData);
 export const updateSetting = (key, value) => api.post('/settings', { key, value });
 
+// Platform-wide branding (login page + index <head>). Super admin manages these.
+// The GET is unauthenticated so the login page can read it before sign-in.
+export const getBranding = () => api.get('/branding');
+export const updateBranding = (data) => api.post('/branding', data);
+export const updateBrandingLogo = (formData) => api.post('/branding/logo', formData);
+export const updateBrandingFavicon = (formData) => api.post('/branding/favicon', formData);
+
 // Chat
 export const getConversations = () => api.get('/chat/conversations');
 // Message fetch supports cursor pagination:

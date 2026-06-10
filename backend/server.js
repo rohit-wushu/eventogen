@@ -57,6 +57,7 @@ app.use('/api/openai', require('./routes/openaiRoutes'));
 app.use('/api/image', require('./routes/imageRoutes'));
 app.use('/api/travel', require('./routes/travelRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
+app.use('/api/branding', require('./routes/brandingRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/api/forms', require('./routes/formRoutes'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
