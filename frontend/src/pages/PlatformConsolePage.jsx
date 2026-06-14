@@ -352,7 +352,7 @@ function BrandingTab() {
                         <div style={label}>Product name</div>
                         <Form.Control size="sm" value={form.site_title}
                             onChange={e => setForm({ ...form, site_title: e.target.value })}
-                            placeholder="EventHub" />
+                            placeholder="Eventogen" />
                         <div style={help}>Shown in the sign-in title and the footer.</div>
                     </div>
                     <div className="col-md-6">
@@ -394,7 +394,7 @@ function BrandingTab() {
                     <div style={label}>Browser tab title (meta title)</div>
                     <Form.Control size="sm" value={form.meta_title}
                         onChange={e => setForm({ ...form, meta_title: e.target.value })}
-                        placeholder="EventHub — Event Management Platform" />
+                        placeholder="Eventogen — Event Management Platform" />
                     <div style={help}>Falls back to the product name above if empty.</div>
                 </div>
                 <div>

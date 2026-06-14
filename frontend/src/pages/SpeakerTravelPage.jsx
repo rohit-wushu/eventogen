@@ -278,7 +278,7 @@ export default function SpeakerTravelPage() {
         doc.setFontSize(7);
         doc.setTextColor(160, 170, 185);
         doc.setFont('helvetica', 'italic');
-        doc.text('EventHub - Event Management System', margin, y);
+        doc.text('Eventogen - Event Management System', margin, y);
         doc.text(new Date().toLocaleString('en-IN'), pw - margin, y, { align: 'right' });
 
         doc.save(`travel-report-${new Date().toISOString().split('T')[0]}.pdf`);

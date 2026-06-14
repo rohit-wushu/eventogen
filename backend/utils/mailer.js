@@ -2,6 +2,36 @@ const nodemailer = require('nodemailer');
 const db = require('../config/db');
 const { decrypt } = require('./encryption');
 
+// Platform-branding cache. settings.tenant_id IS NULL holds the global
+// site_title + portal_logo (set by super-admin in /platform/branding).
+// Cached 5 min so we don't hit the DB on every email send.
+let brandCache = { data: null, expires: 0 };
+const PLATFORM_FALLBACK = { site_title: 'Eventogen', portal_logo: '' };
+const getPlatformBrand = async () => {
+    if (brandCache.data && Date.now() < brandCache.expires) return brandCache.data;
+    try {
+        const [rows] = await db.query(
+            `SELECT setting_key, setting_value FROM settings
+             WHERE tenant_id IS NULL AND setting_key IN ('site_title','portal_logo')`
+        );
+        const out = { ...PLATFORM_FALLBACK };
+        for (const r of rows) {
+            if (r.setting_value) out[r.setting_key] = r.setting_value;
+        }
+        brandCache = { data: out, expires: Date.now() + 5 * 60 * 1000 };
+        return out;
+    } catch {
+        return PLATFORM_FALLBACK;
+    }
+};
+const invalidatePlatformBrandCache = () => { brandCache = { data: null, expires: 0 }; };
+const absoluteLogoUrl = (logoPath) => {
+    if (!logoPath) return '';
+    if (/^https?:\/\//i.test(logoPath)) return logoPath;
+    const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+    return base ? `${base}${logoPath.startsWith('/') ? '' : '/'}${logoPath}` : '';
+};
+
 // Email transport resolution is tenant-aware:
 //   1. If a tenantId is passed AND that tenant has an active row in
 //      tenant_smtp_settings, use those credentials.
@@ -23,7 +53,14 @@ const fallbackTransporter = (() => {
         },
     });
 })();
-const fallbackFrom = process.env.SMTP_FROM || (process.env.SMTP_USER ? `"EventHub" <${process.env.SMTP_USER}>` : null);
+// Built lazily on first use so it can pick up the (possibly cached) brand
+// name. If SMTP_FROM is set in env it always wins.
+const resolveFallbackFrom = async () => {
+    if (process.env.SMTP_FROM) return process.env.SMTP_FROM;
+    if (!process.env.SMTP_USER) return null;
+    const { site_title } = await getPlatformBrand();
+    return `"${site_title}" <${process.env.SMTP_USER}>`;
+};
 
 // Cache keyed by tenant_id → { transporter, from, updatedAt }. Invalidated
 // when PUT /api/smtp/settings runs (see smtpRoutes).
@@ -73,7 +110,10 @@ const resolveTransporter = async (tenantId) => {
             console.warn(`[MAIL] tenant ${tenantId} SMTP lookup failed:`, err.message);
         }
     }
-    if (fallbackTransporter) return { transporter: fallbackTransporter, from: fallbackFrom, source: 'env' };
+    if (fallbackTransporter) {
+        const from = await resolveFallbackFrom();
+        return { transporter: fallbackTransporter, from, source: 'env' };
+    }
     return null;
 };
 
@@ -129,15 +169,31 @@ const verifySmtp = async () => {
     }
 };
 
+// Shared brand header for every transactional email. Uses portal_logo if the
+// super-admin uploaded one; otherwise renders the platform name as text.
+const emailBrandHeader = (brand) => {
+    const logoUrl = absoluteLogoUrl(brand.portal_logo);
+    if (logoUrl) {
+        return `<div style="text-align:center; margin-bottom:24px;">
+            <img src="${logoUrl}" alt="${brand.site_title}" style="max-height:48px; max-width:180px;" />
+        </div>`;
+    }
+    return `<div style="text-align:center; margin-bottom:24px;">
+        <div style="font-size:18px; font-weight:800; color:#1e293b; letter-spacing:-0.01em;">${brand.site_title}</div>
+    </div>`;
+};
+
 const sendPasswordResetEmail = async (email, resetUrl, userName, tenantId = null) => {
+    const brand = await getPlatformBrand();
     return sendMail({
         to: email,
         tenantId,
-        subject: 'Reset Your Password - EventHub',
+        subject: `Reset your password — ${brand.site_title}`,
         html: `
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 40px 24px; background: #f8fafc;">
                 <div style="background: #ffffff; border-radius: 16px; padding: 40px 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
-                    <div style="text-align: center; margin-bottom: 32px;">
+                    ${emailBrandHeader(brand)}
+                    <div style="text-align: center; margin-bottom: 24px;">
                         <div style="width: 56px; height: 56px; border-radius: 14px; background: linear-gradient(135deg, #8b5cf6, #ec4899); display: inline-flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; margin-bottom: 16px;">🔒</div>
                         <h2 style="margin: 0; color: #1e293b; font-size: 22px; font-weight: 700;">Password Reset</h2>
                     </div>
@@ -149,6 +205,7 @@ const sendPasswordResetEmail = async (email, resetUrl, userName, tenantId = null
                     <p style="color: #94a3b8; font-size: 13px; line-height: 1.5;">If you didn't request this, you can safely ignore this email. Your password will remain unchanged.</p>
                     <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
                     <p style="color: #cbd5e1; font-size: 12px; text-align: center; margin: 0;">If the button doesn't work, copy and paste this URL:<br /><a href="${resetUrl}" style="color: #8b5cf6; word-break: break-all;">${resetUrl}</a></p>
+                    <p style="color: #cbd5e1; font-size: 11px; text-align: center; margin: 12px 0 0;">Sent by ${brand.site_title}</p>
                 </div>
             </div>
         `,
@@ -156,24 +213,27 @@ const sendPasswordResetEmail = async (email, resetUrl, userName, tenantId = null
 };
 
 const sendInviteEmail = async (email, inviteUrl, inviterName, role, eventTitle, tenantId = null) => {
+    const brand = await getPlatformBrand();
     return sendMail({
         to: email,
         tenantId,
-        subject: `You're invited to join EventHub${eventTitle ? ' - ' + eventTitle : ''}`,
+        subject: `You're invited to join ${brand.site_title}${eventTitle ? ' — ' + eventTitle : ''}`,
         html: `
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 40px 24px; background: #f8fafc;">
                 <div style="background: #ffffff; border-radius: 16px; padding: 40px 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
-                    <div style="text-align: center; margin-bottom: 32px;">
+                    ${emailBrandHeader(brand)}
+                    <div style="text-align: center; margin-bottom: 24px;">
                         <div style="width: 56px; height: 56px; border-radius: 14px; background: linear-gradient(135deg, #10b981, #059669); display: inline-flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; margin-bottom: 16px;">✉️</div>
                         <h2 style="margin: 0; color: #1e293b; font-size: 22px; font-weight: 700;">You're Invited!</h2>
                     </div>
                     <p style="color: #475569; font-size: 15px; line-height: 1.6; margin-bottom: 8px;">Hi,</p>
-                    <p style="color: #475569; font-size: 15px; line-height: 1.6; margin-bottom: 24px;"><strong>${inviterName || 'An admin'}</strong> has invited you to join as <strong style="text-transform: capitalize;">${role}</strong>${eventTitle ? ' for the event <strong>' + eventTitle + '</strong>' : ''}. Click below to set up your account.</p>
+                    <p style="color: #475569; font-size: 15px; line-height: 1.6; margin-bottom: 24px;"><strong>${inviterName || 'An admin'}</strong> has invited you to join <strong>${brand.site_title}</strong> as <strong style="text-transform: capitalize;">${role}</strong>${eventTitle ? ' for the event <strong>' + eventTitle + '</strong>' : ''}. Click below to set up your account.</p>
                     <div style="text-align: center; margin-bottom: 24px;">
                         <a href="${inviteUrl}" style="display: inline-block; background: linear-gradient(135deg, #10b981, #059669); color: #ffffff; text-decoration: none; padding: 14px 36px; border-radius: 10px; font-weight: 600; font-size: 15px; box-shadow: 0 4px 12px rgba(16,185,129,0.3);">Accept Invitation</a>
                     </div>
                     <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
                     <p style="color: #cbd5e1; font-size: 12px; text-align: center; margin: 0;">If the button doesn't work, copy and paste this URL:<br /><a href="${inviteUrl}" style="color: #10b981; word-break: break-all;">${inviteUrl}</a></p>
+                    <p style="color: #cbd5e1; font-size: 11px; text-align: center; margin: 12px 0 0;">Sent by ${brand.site_title}</p>
                 </div>
             </div>
         `,
@@ -187,4 +247,5 @@ module.exports = {
     verifySmtp,
     verifyRawSmtp,
     invalidateTenantMailerCache,
+    invalidatePlatformBrandCache,
 };

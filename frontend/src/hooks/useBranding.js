@@ -34,7 +34,7 @@ function applyToHead(b) {
 // Shape exposed to callers — sane defaults so the UI renders before the
 // network response lands.
 const DEFAULTS = {
-    site_title: 'EventHub',
+    site_title: 'Eventogen',
     portal_tagline: 'Premium Speaker Suite',
     hero_headline: 'Everything you need to run *unforgettable* events.',
     hero_sub: 'Manage speakers, partners, agendas and travel in one elegant, secure workspace — trusted by event teams worldwide.',

@@ -136,7 +136,7 @@ router.post('/settings/test', protect, requireAdmin, async (req, res) => {
                 await sendMail({
                     tenantId: req.tenantId,
                     to: adminEmail,
-                    subject: 'EventHub SMTP test · it works',
+                    subject: 'SMTP test · it works',
                     html: `<div style="font-family:Inter,system-ui,sans-serif;background:#f8fafc;padding:24px">
                         <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:12px;padding:26px 28px;border:1px solid #e5e7eb">
                             <div style="font-size:20px;font-weight:700;color:#0f172a;margin-bottom:6px">✅ SMTP is working</div>

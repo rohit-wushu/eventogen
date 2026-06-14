@@ -100,7 +100,7 @@ const buildVariables = ({ attendee, event, tenant }) => {
         venue: event?.venue || '',
         ticket_type: ticketLabel,
         status: (attendee?.status || 'registered').replace(/_/g, ' '),
-        org_name: tenant?.name || 'EventHub',
+        org_name: tenant?.name || 'Eventogen',
     };
 };
 

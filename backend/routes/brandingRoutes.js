@@ -16,6 +16,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { protect, requireSuperAdmin } = require('../middleware/authMiddleware');
 const { createUpload, fileUrl } = require('../utils/storage');
+const { invalidatePlatformBrandCache } = require('../utils/mailer');
 
 const BRANDING_KEYS = [
     'site_title', 'portal_tagline',
@@ -68,6 +69,7 @@ router.post('/', async (req, res) => {
                 [k, v]
             );
         }
+        invalidatePlatformBrandCache();
         res.json({ ok: true, updated: entries.length });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -83,6 +85,7 @@ const persistFile = async (key, file, res) => {
              ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
             [key, url]
         );
+        invalidatePlatformBrandCache();
         res.json({ ok: true, url });
     } catch (err) { res.status(500).json({ error: err.message }); }
 };

@@ -69,11 +69,11 @@ const db = require('./config/db');
 
         // 3. Seed default platform branding so the login page has something to show.
         const defaults = [
-            ['site_title',       'EventHub'],
+            ['site_title',       'Eventogen'],
             ['portal_tagline',   'Premium Speaker Suite'],
             ['hero_headline',    'Everything you need to run unforgettable events.'],
             ['hero_sub',         'Manage speakers, partners, agendas and travel in one elegant, secure workspace — trusted by event teams worldwide.'],
-            ['meta_title',       'EventHub — Event Management Platform'],
+            ['meta_title',       'Eventogen — Event Management Platform'],
             ['meta_description', 'Manage speakers, partners, agendas, attendees and certificates from one workspace.'],
             ['portal_logo',      ''],
             ['favicon',          '']

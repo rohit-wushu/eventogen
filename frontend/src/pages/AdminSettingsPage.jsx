@@ -91,7 +91,7 @@ export default function AdminSettingsPage() {
                 updateSetting('site_title', siteTitle),
                 updateSetting('meta_description', metaDescription)
             ]);
-            document.title = siteTitle || 'EventHub - Event Management System';
+            document.title = siteTitle || 'Eventogen - Event Management System';
             const metaTag = document.querySelector('meta[name="description"]');
             if (metaTag) {
                 metaTag.setAttribute('content', metaDescription);
@@ -314,7 +314,7 @@ export default function AdminSettingsPage() {
                         <Form.Label className="text-white-50 small">Site Title</Form.Label>
                         <Form.Control
                             type="text"
-                            placeholder="e.g. EventHub - Event Management System"
+                            placeholder="e.g. Eventogen - Event Management System"
                             value={siteTitle}
                             onChange={(e) => setSiteTitle(e.target.value)}
                             className="form-control-dark"
