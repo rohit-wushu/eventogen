@@ -28,16 +28,32 @@ class CutoutError extends Error {
 async function preserveAlpha(originalBuffer, enhancedBuffer) {
     const srcMeta = await sharp(originalBuffer).metadata();
     if (!srcMeta.hasAlpha) return enhancedBuffer; // nothing to preserve
-    const [alphaMask, enhancedMeta] = await Promise.all([
-        sharp(originalBuffer).ensureAlpha().extractChannel('alpha').toBuffer({ resolveWithObject: true }),
-        sharp(enhancedBuffer).metadata(),
-    ]);
-    const resizedMask = await sharp(alphaMask.data, { raw: { width: srcMeta.width, height: srcMeta.height, channels: 1 } })
+
+    const enhancedMeta = await sharp(enhancedBuffer).metadata();
+
+    // Extract the source alpha as RAW bytes (single channel, one byte per pixel).
+    // The .raw() call here is critical — without it, toBuffer() returns PNG-
+    // encoded bytes, which would then fail to be re-interpreted as raw later.
+    const alphaRaw = await sharp(originalBuffer)
+        .ensureAlpha()
+        .extractChannel('alpha')
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+    // Resize the alpha mask to match Cutout's (possibly upscaled) output, then
+    // dump it back to raw so joinChannel can accept it.
+    const resizedMaskRaw = await sharp(alphaRaw.data, {
+            raw: { width: alphaRaw.info.width, height: alphaRaw.info.height, channels: 1 },
+        })
         .resize(enhancedMeta.width, enhancedMeta.height, { kernel: 'lanczos3' })
+        .raw()
         .toBuffer();
+
     return sharp(enhancedBuffer)
-        .removeAlpha()              // drop the white-on-alpha Cutout gave us
-        .joinChannel(resizedMask, { raw: { width: enhancedMeta.width, height: enhancedMeta.height, channels: 1 } })
+        .removeAlpha()              // drop whatever Cutout gave us as alpha
+        .joinChannel(resizedMaskRaw, {
+            raw: { width: enhancedMeta.width, height: enhancedMeta.height, channels: 1 },
+        })
         .png()
         .toBuffer();
 }
