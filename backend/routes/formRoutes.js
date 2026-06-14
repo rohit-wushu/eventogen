@@ -1,10 +1,12 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const { createUpload, fileUrl } = require('../utils/storage');
 const db = require('../config/db');
 const { protect } = require('../middleware/authMiddleware');
 const { sendMail } = require('../utils/mailer');
 const { generateMathCaptcha, verifyMathCaptcha } = require('../utils/captcha');
+const { capacityCheck } = require('../middleware/limits');
 
 // ──────────────────────────────────────────────────────────────
 // Forms — Typeform-style form builder + public fill flow.
@@ -190,7 +192,7 @@ router.get('/public/:id', async (req, res) => {
                     f.payment_enabled, f.payment_mode, f.payment_amount, f.payment_currency,
                     f.payment_tiers_json, f.payment_description,
                     f.header_image_url, f.background_color, f.captcha_enabled,
-                    f.theme, f.theme_config,
+                    f.theme, f.theme_config, f.hide_footer,
                     f.event_id, e.title AS event_title,
                     e.primary_color, e.secondary_color, e.font_family, e.event_logo_url
              FROM forms f
@@ -248,6 +250,7 @@ router.get('/public/:id', async (req, res) => {
             ...publicForm,
             payment_enabled: !!publicForm.payment_enabled,
             captcha_enabled: !!publicForm.captcha_enabled,
+            hide_footer: !!publicForm.hide_footer,
             theme: publicForm.theme || 'classic',
             theme_config: parseJsonMaybe(theme_config) || {},
             captcha,
@@ -290,7 +293,7 @@ router.post('/public/:id/submit', async (req, res) => {
     try {
         const formId = req.params.id;
         const [forms] = await db.query(
-            `SELECT id, tenant_id, event_id, title, is_active, notify_email, max_submissions, close_at, redirect_url, payment_enabled, captcha_enabled
+            `SELECT id, tenant_id, event_id, title, is_active, notify_email, max_submissions, close_at, redirect_url, payment_enabled, captcha_enabled, register_as_attendee
              FROM forms WHERE id = ?`,
             [formId]
         );
@@ -421,6 +424,52 @@ router.post('/public/:id/submit', async (req, res) => {
             'INSERT INTO form_submissions (tenant_id, form_id, data_json, submitter_ip) VALUES (?, ?, ?, ?)',
             [tenantId, formId, JSON.stringify(cleaned), ip || null]
         );
+
+        // "Register as attendee" toggle — mirror this submission into the
+        // attendees list so the operator can see / check-in / certify the
+        // respondent without re-typing. Only runs when the form has an event
+        // (attendees need event_id) and the tenant is under their plan limit.
+        // Field mapping is best-effort: we pick the first form_field whose
+        // type or label looks like name/email/phone/company/designation.
+        if (form.register_as_attendee && form.event_id) {
+            try {
+                const cap = await capacityCheck(tenantId, 'attendees', 1);
+                if (cap.ok) {
+                    const labelOf = (f) => (f.label || '').toLowerCase();
+                    const find = (typeMatch, labelKeywords) => {
+                        const byType = typeMatch ? fields.find(f => f.field_type === typeMatch && cleaned[f.id]) : null;
+                        if (byType) return cleaned[byType.id];
+                        const byLabel = fields.find(f => labelKeywords.some(k => labelOf(f).includes(k)) && cleaned[f.id]);
+                        return byLabel ? cleaned[byLabel.id] : null;
+                    };
+                    const stringy = (v) => typeof v === 'string' ? v.trim() : (v == null ? '' : String(v).trim());
+                    const aName    = stringy(find('name',  ['name']));
+                    const aEmail   = stringy(find('email', ['email']));
+                    const aPhone   = stringy(find('phone', ['phone', 'mobile', 'contact']));
+                    const aCompany = stringy(find(null,    ['company', 'organization', 'organisation', 'firm']));
+                    const aDesig   = stringy(find(null,    ['designation', 'job title', 'title', 'role', 'position']));
+
+                    if (aName) {
+                        const checkinToken = crypto.randomBytes(16).toString('hex');
+                        await db.query(
+                            `INSERT INTO attendees (tenant_id, name, email, phone, company, designation,
+                                                    ticket_type, status, event_id, notes, created_by, checkin_token)
+                             VALUES (?, ?, ?, ?, ?, ?, 'general', 'registered', ?, ?, NULL, ?)`,
+                            [tenantId, aName.slice(0, 255), aEmail.slice(0, 255) || null,
+                             aPhone.slice(0, 50) || null, aCompany.slice(0, 255) || null,
+                             aDesig.slice(0, 255) || null, form.event_id,
+                             `Registered via form "${form.title}"`, checkinToken]
+                        );
+                    }
+                } else {
+                    console.warn(`Form ${formId}: attendee skipped (over plan limit)`);
+                }
+            } catch (err) {
+                // Don't let an attendee insert failure break the submission —
+                // submission is already persisted; this is a best-effort mirror.
+                console.error(`Form ${formId}: register_as_attendee failed:`, err.message);
+            }
+        }
 
         // Fire-and-forget email notification. Failure never blocks the
         // submission response. If SMTP isn't configured we log and move on.
@@ -556,7 +605,7 @@ router.get('/:id', protect, requireAdminOrManager, async (req, res) => {
                     payment_enabled, payment_mode, payment_amount, payment_currency,
                     payment_tiers_json, payment_description,
                     header_image_url, background_color, captcha_enabled,
-                    theme, theme_config
+                    theme, theme_config, hide_footer, register_as_attendee
              FROM forms WHERE id = ? AND tenant_id = ?`,
             [req.params.id, req.tenantId]
         );
@@ -573,6 +622,8 @@ router.get('/:id', protect, requireAdminOrManager, async (req, res) => {
             ...rest,
             payment_enabled: !!rest.payment_enabled,
             captcha_enabled: !!rest.captcha_enabled,
+            hide_footer: !!rest.hide_footer,
+            register_as_attendee: !!rest.register_as_attendee,
             theme: rest.theme || 'classic',
             theme_config: parseJsonMaybe(theme_config) || {},
             payment_tiers: parseJsonMaybe(payment_tiers_json) || [],
@@ -621,7 +672,7 @@ router.put('/:id', protect, requireAdminOrManager, async (req, res) => {
     const { title, description, event_id, thank_you_message, redirect_url, submit_label,
         notify_email, max_submissions, close_at, is_active,
         header_image_url, background_color, captcha_enabled,
-        theme, theme_config } = req.body;
+        theme, theme_config, hide_footer, register_as_attendee } = req.body;
     const cleanTitle = (title || '').trim();
     if (!cleanTitle) return res.status(400).json({ error: 'Form title is required' });
     const parsedEmail = parseNotifyEmails(notify_email);
@@ -642,7 +693,7 @@ router.put('/:id', protect, requireAdminOrManager, async (req, res) => {
                               payment_enabled=?, payment_mode=?, payment_amount=?, payment_currency=?,
                               payment_tiers_json=?, payment_description=?,
                               header_image_url=?, background_color=?, captcha_enabled=?,
-                              theme=?, theme_config=?
+                              theme=?, theme_config=?, hide_footer=?, register_as_attendee=?
              WHERE id=? AND tenant_id=?`,
             [cleanTitle, description || null, event_id || null, thank_you_message || null,
                 parsedRedirect.clean, submit_label || null,
@@ -656,6 +707,8 @@ router.put('/:id', protect, requireAdminOrManager, async (req, res) => {
                 (background_color || '').trim() || null,
                 captcha_enabled ? 1 : 0,
                 cleanTheme, cleanThemeConfig ? JSON.stringify(cleanThemeConfig) : null,
+                hide_footer ? 1 : 0,
+                register_as_attendee ? 1 : 0,
                 req.params.id, req.tenantId]
         );
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Form not found' });

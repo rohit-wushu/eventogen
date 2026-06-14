@@ -282,7 +282,7 @@ export default function UsersPage() {
 
             <Modal show={show} onHide={() => { setShow(false); setSuccessLink(''); setEmailStatus(null); setCopied(false); }} centered contentClassName="invite-modal-content" backdropClassName="invite-modal-backdrop">
                 <div className="invite-modal">
-                    {/* HEADER with gradient hero */}
+                    {/* HEADER — compact horizontal hero (icon + text) */}
                     <div className="invite-hero">
                         <button className="invite-close" onClick={() => { setShow(false); setSuccessLink(''); setEmailStatus(null); setCopied(false); }} aria-label="Close">
                             <BsXLg />
@@ -290,14 +290,16 @@ export default function UsersPage() {
                         <div className="invite-hero-ico">
                             {successLink ? <BsEnvelopePaperFill /> : editing ? <BsPersonGear /> : <BsSendFill />}
                         </div>
-                        <h4 className="invite-hero-title">
-                            {successLink ? 'Invitation Ready' : editing ? 'Edit User' : 'Invite a Teammate'}
-                        </h4>
-                        <p className="invite-hero-sub">
-                            {successLink
-                                ? (emailStatus?.sent ? `We emailed the invite to ${form.email}` : `Share the link with ${form.email}`)
-                                : editing ? 'Update role, event assignment or password.' : 'They\'ll receive an email with a secure sign-up link.'}
-                        </p>
+                        <div className="invite-hero-text">
+                            <h4 className="invite-hero-title">
+                                {successLink ? 'Invitation Ready' : editing ? 'Edit User' : 'Invite a Teammate'}
+                            </h4>
+                            <p className="invite-hero-sub">
+                                {successLink
+                                    ? (emailStatus?.sent ? `We emailed the invite to ${form.email}` : `Share the link with ${form.email}`)
+                                    : editing ? 'Update role, event assignment or password.' : 'They\'ll receive an email with a secure sign-up link.'}
+                            </p>
+                        </div>
                     </div>
 
                     {/* BODY */}
@@ -429,15 +431,15 @@ export default function UsersPage() {
                                             events. For pending invites only the first selection is sent;
                                             the rest can be added after they accept. */}
                                         <div style={{
-                                            maxHeight: 180, overflowY: 'auto', border: '1px solid var(--border-subtle)',
-                                            borderRadius: 8, padding: '6px 4px', background: 'var(--bg-card)'
+                                            maxHeight: 110, overflowY: 'auto', border: '1px solid var(--border-subtle)',
+                                            borderRadius: 8, padding: '4px 4px', background: 'var(--bg-card)'
                                         }}>
                                             {events.length === 0 ? (
-                                                <div style={{ padding: '8px 10px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>No events available</div>
+                                                <div style={{ padding: '6px 10px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>No events available</div>
                                             ) : events.map(e => {
                                                 const checked = form.event_ids.includes(Number(e.id));
                                                 return (
-                                                    <label key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                    <label key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', cursor: 'pointer', fontSize: '0.82rem' }}>
                                                         <input
                                                             type="checkbox"
                                                             checked={checked}
@@ -588,8 +590,8 @@ export default function UsersPage() {
                                 {(form.role === 'employee' || form.role === 'manager') && (
                                     <div className="invite-field">
                                         <label className="invite-label">Task / Responsibility <span className="invite-label-opt">(optional)</span></label>
-                                        <textarea
-                                            rows={2}
+                                        <input
+                                            type="text"
                                             className="invite-input"
                                             value={form.assigned_task}
                                             onChange={e => setForm({ ...form, assigned_task: e.target.value })}

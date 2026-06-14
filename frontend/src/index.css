@@ -73,26 +73,33 @@ body {
 }
 .invite-modal {
     width: 100%;
-    max-width: 540px;
+    max-width: 600px;
     margin: 0 auto;
     background: #0f0f22;
     border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 20px;
+    border-radius: 18px;
     overflow: hidden;
     box-shadow: 0 30px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04) inset;
     color: #f5f5fa;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 48px);
 }
 
-/* HERO */
+/* HERO — compact horizontal layout so the modal fits in a single fold. */
 .invite-hero {
     position: relative;
-    padding: 32px 32px 28px;
+    padding: 16px 22px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
     background:
         radial-gradient(circle at 20% 20%, rgba(139,92,246,0.35), transparent 50%),
         radial-gradient(circle at 80% 80%, rgba(236,72,153,0.25), transparent 55%),
         linear-gradient(135deg, #1a1040 0%, #2a1060 100%);
     border-bottom: 1px solid rgba(255,255,255,0.08);
     overflow: hidden;
+    flex-shrink: 0;
 }
 .invite-hero::after {
     content: '';
@@ -106,15 +113,16 @@ body {
 
 .invite-close {
     position: absolute;
-    top: 16px; right: 16px;
-    width: 32px; height: 32px;
+    top: 12px; right: 12px;
+    width: 28px; height: 28px;
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.1);
     color: rgba(255,255,255,0.7);
-    border-radius: 8px;
+    border-radius: 7px;
     display: flex; align-items: center; justify-content: center;
     cursor: pointer;
     transition: all 0.15s;
+    font-size: 12px;
 }
 .invite-close:hover {
     background: rgba(255,255,255,0.12);
@@ -122,29 +130,34 @@ body {
 }
 
 .invite-hero-ico {
-    width: 52px; height: 52px;
-    border-radius: 14px;
+    width: 40px; height: 40px;
+    border-radius: 11px;
     background: linear-gradient(135deg, #a78bfa, #ec4899);
     display: flex; align-items: center; justify-content: center;
-    font-size: 22px; color: #fff;
-    box-shadow: 0 10px 30px rgba(139,92,246,0.45);
-    margin-bottom: 16px;
+    font-size: 18px; color: #fff;
+    box-shadow: 0 8px 22px rgba(139,92,246,0.4);
+    flex-shrink: 0;
 }
+.invite-hero-text { min-width: 0; flex: 1; padding-right: 32px; }
 .invite-hero-title {
-    font-size: 1.4rem; font-weight: 700;
-    letter-spacing: -0.02em;
-    color: #fff; margin: 0 0 4px;
+    font-size: 1.05rem; font-weight: 700;
+    letter-spacing: -0.01em;
+    color: #fff; margin: 0 0 2px;
+    line-height: 1.2;
 }
 .invite-hero-sub {
-    font-size: 0.88rem;
+    font-size: 0.78rem;
     color: rgba(255,255,255,0.7);
-    margin: 0; line-height: 1.5;
+    margin: 0; line-height: 1.35;
 }
 
 /* BODY */
 .invite-body {
-    padding: 28px 32px 24px;
+    padding: 16px 22px 12px;
     background: #0f0f22;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .invite-alert {
@@ -159,30 +172,32 @@ body {
 }
 .invite-alert svg { flex-shrink: 0; margin-top: 2px; }
 
-.invite-form { display: flex; flex-direction: column; gap: 18px; }
+.invite-form { display: flex; flex-direction: column; gap: 12px; }
+.invite-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 520px) { .invite-row { grid-template-columns: 1fr; } }
 
-.invite-field { display: flex; flex-direction: column; gap: 8px; }
+.invite-field { display: flex; flex-direction: column; gap: 5px; }
 .invite-label {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: 0.78rem; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.74rem; font-weight: 600;
     color: rgba(255,255,255,0.85);
     letter-spacing: 0.01em;
 }
-.invite-label svg { color: #a78bfa; font-size: 13px; }
+.invite-label svg { color: #a78bfa; font-size: 12px; }
 .invite-label-opt {
-    font-weight: 500; font-size: 0.72rem;
+    font-weight: 500; font-size: 0.7rem;
     color: rgba(255,255,255,0.45);
     margin-left: 4px;
 }
 
 .invite-input {
     width: 100%;
-    padding: 12px 14px;
-    border-radius: 10px;
+    padding: 9px 12px;
+    border-radius: 9px;
     background: rgba(255,255,255,0.035);
     border: 1px solid rgba(255,255,255,0.1);
     color: #fff;
-    font-size: 0.92rem;
+    font-size: 0.85rem;
     transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
     font-family: inherit;
 }
@@ -211,19 +226,19 @@ body {
     cursor: pointer;
 }
 .invite-select option { background: #1a1a2e; color: #fff; }
-textarea.invite-input { resize: vertical; min-height: 64px; }
+textarea.invite-input { resize: vertical; min-height: 50px; }
 
-/* Role picker */
+/* Role picker — compact horizontal pills so all three roles fit in one row. */
 .invite-role-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
 }
 .invite-role-chip {
-    display: flex; flex-direction: column; gap: 4px;
+    display: flex; flex-direction: column; gap: 1px;
     text-align: left;
-    padding: 12px 14px;
-    border-radius: 11px;
+    padding: 7px 10px;
+    border-radius: 9px;
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.1);
     color: rgba(255,255,255,0.85);
@@ -238,17 +253,17 @@ textarea.invite-input { resize: vertical; min-height: 64px; }
 .invite-role-chip.active {
     background: linear-gradient(135deg, rgba(139,92,246,0.2), rgba(236,72,153,0.12));
     border-color: #a78bfa;
-    box-shadow: 0 0 0 3px rgba(167,139,250,0.15), 0 4px 16px rgba(139,92,246,0.25);
+    box-shadow: 0 0 0 2px rgba(167,139,250,0.15);
 }
 .invite-role-chip.active::after {
     content: '';
-    position: absolute; top: 10px; right: 10px;
-    width: 8px; height: 8px; border-radius: 50%;
+    position: absolute; top: 7px; right: 7px;
+    width: 6px; height: 6px; border-radius: 50%;
     background: #a78bfa;
-    box-shadow: 0 0 8px #a78bfa;
+    box-shadow: 0 0 6px #a78bfa;
 }
-.invite-role-name { font-weight: 700; font-size: 0.88rem; color: #fff; }
-.invite-role-hint { font-size: 0.72rem; color: rgba(255,255,255,0.55); }
+.invite-role-name { font-weight: 700; font-size: 0.8rem; color: #fff; }
+.invite-role-hint { font-size: 0.66rem; color: rgba(255,255,255,0.55); line-height: 1.2; }
 .invite-role-chip.active .invite-role-hint { color: rgba(255,255,255,0.75); }
 
 /* Status cards (success state) */
@@ -334,17 +349,18 @@ textarea.invite-input { resize: vertical; min-height: 64px; }
 /* FOOTER */
 .invite-footer {
     display: flex; justify-content: flex-end; gap: 10px;
-    padding: 18px 32px;
+    padding: 12px 22px;
     background: rgba(0,0,0,0.2);
     border-top: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
 }
 .invite-btn-ghost {
-    padding: 10px 20px;
+    padding: 8px 16px;
     background: transparent;
     border: 1px solid rgba(255,255,255,0.12);
     color: rgba(255,255,255,0.8);
-    font-weight: 600; font-size: 0.88rem;
-    border-radius: 10px; cursor: pointer;
+    font-weight: 600; font-size: 0.82rem;
+    border-radius: 9px; cursor: pointer;
     transition: all 0.15s;
 }
 .invite-btn-ghost:hover {
@@ -354,11 +370,11 @@ textarea.invite-input { resize: vertical; min-height: 64px; }
 }
 .invite-btn-primary {
     display: inline-flex; align-items: center; gap: 8px;
-    padding: 10px 22px;
+    padding: 8px 18px;
     background: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%);
     border: none; color: #fff;
-    font-weight: 600; font-size: 0.9rem;
-    border-radius: 10px; cursor: pointer;
+    font-weight: 600; font-size: 0.85rem;
+    border-radius: 9px; cursor: pointer;
     transition: all 0.15s;
     box-shadow: 0 6px 20px rgba(139,92,246,0.35);
 }
@@ -2197,13 +2213,30 @@ textarea.invite-input { resize: vertical; min-height: 64px; }
 /* ─── Form Controls (Dark) ─── */
 .form-control-dark,
 .form-select-dark {
-    background: rgba(255, 255, 255, 0.04) !important;
+    background-color: rgba(255, 255, 255, 0.04) !important;
     border: 1px solid var(--border-subtle) !important;
     color: var(--text-primary) !important;
     border-radius: 10px !important;
     padding: 10px 14px;
     font-size: 0.875rem;
     transition: var(--transition);
+}
+
+/* Bootstrap supplies a dark-slate chevron via background-image on .form-select.
+   On the dark theme that arrow is invisible, so paint our own light one. The
+   selector is doubled (.form-select-dark.form-select-dark) to outrank any
+   accidental Bootstrap `.form-select { background-image: ... }` override that
+   loads after this file. */
+.form-select-dark.form-select-dark,
+select.form-select-dark {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23ffffff' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 0.9rem center !important;
+    background-size: 16px 12px !important;
+    padding-right: 2.5rem !important;
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
 }
 
 .form-form-select-dark {
@@ -2214,7 +2247,7 @@ textarea.invite-input { resize: vertical; min-height: 64px; }
 .form-select-dark:focus {
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 3px var(--accent-glow) !important;
-    background: rgba(255, 255, 255, 0.06) !important;
+    background-color: rgba(255, 255, 255, 0.06) !important;
 }
 
 .form-select {
@@ -2901,7 +2934,6 @@ label.muted-label {
 [data-theme="light"] input.form-control-dark,
 [data-theme="light"] textarea.form-control-dark,
 [data-theme="light"] select.form-select-dark {
-    background: #ffffff !important;
     background-color: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
     color: #1e293b !important;
@@ -2909,9 +2941,14 @@ label.muted-label {
     caret-color: #1e293b !important;
 }
 
+/* Repaint the chevron in slate-600 for the light theme. */
+[data-theme="light"] .form-select-dark,
+[data-theme="light"] select.form-select-dark {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23475569' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e") !important;
+}
+
 [data-theme="light"] .form-control-dark:focus,
 [data-theme="light"] .form-select-dark:focus {
-    background: #ffffff !important;
     background-color: #ffffff !important;
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15) !important;
@@ -3450,7 +3487,6 @@ div.api-ep-desc,
 [data-theme="light"] .ps-workspace input,
 [data-theme="light"] .ps-workspace select,
 [data-theme="light"] .ps-workspace textarea {
-    background: #323232 !important;
     background-color: #323232 !important;
     color: #eee !important;
     border-color: #1a1a1a !important;
@@ -3462,7 +3498,6 @@ div.api-ep-desc,
 
 [data-theme="light"] .ps-workspace .form-control-dark,
 [data-theme="light"] .ps-workspace .form-select-dark {
-    background: #000000 !important;
     background-color: #000000 !important;
     color: #fff !important;
     border-color: #3d3d5c !important;

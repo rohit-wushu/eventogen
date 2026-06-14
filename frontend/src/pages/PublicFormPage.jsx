@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { getPublicForm, submitPublicForm, uploadPublicFormFile, createFormPaymentOrder, verifyFormPayment, updateFormPaymentStatus } from '../services/api';
 import { mergeThemeConfig, configToCssVars } from '../components/FormThemeCustomizer';
+import { useBranding } from '../hooks/useBranding';
 
 // Lazy-load Razorpay's checkout.js once per page (CDN script). Returns a
 // Promise that resolves to window.Razorpay; subsequent calls re-use the same
@@ -62,6 +63,7 @@ const isFieldVisible = (f, values) => {
 
 export default function PublicFormPage() {
     const { id } = useParams();
+    const brand = useBranding();
     const [form, setForm] = useState(null);
     const [values, setValues] = useState({});
     const [loading, setLoading] = useState(true);
@@ -562,7 +564,9 @@ export default function PublicFormPage() {
                     </button>
                 </form>
 
-                <footer className="pf-footer">Powered by your event portal</footer>
+                {!form.hide_footer && (
+                    <footer className="pf-footer">Powered by {brand.site_title || 'Eventogen'}</footer>
+                )}
             </div>
 
             {/* Award-nomination confirmation sheet. Renders the picked path,

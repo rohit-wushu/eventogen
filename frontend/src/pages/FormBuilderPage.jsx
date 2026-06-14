@@ -75,6 +75,8 @@ export default function FormBuilderPage() {
         payment_tiers: [{ label: 'Early Bird', amount: '', valid_until: '' }, { label: 'Regular', amount: '', valid_until: '' }],
         header_image_url: '', background_color: '',
         captcha_enabled: false,
+        hide_footer: false,
+        register_as_attendee: false,
         theme: 'classic',
         theme_config: {},
     });
@@ -148,6 +150,8 @@ export default function FormBuilderPage() {
                 header_image_url: data.header_image_url || '',
                 background_color: data.background_color || '',
                 captcha_enabled: !!data.captcha_enabled,
+                hide_footer: !!data.hide_footer,
+                register_as_attendee: !!data.register_as_attendee,
                 theme: data.theme || 'classic',
                 theme_config: data.theme_config && typeof data.theme_config === 'object' ? data.theme_config : {},
             });
@@ -257,6 +261,8 @@ export default function FormBuilderPage() {
                 header_image_url: settings.header_image_url || null,
                 background_color: settings.background_color || null,
                 captcha_enabled: !!settings.captcha_enabled,
+                hide_footer: !!settings.hide_footer,
+                register_as_attendee: !!settings.register_as_attendee,
                 theme: settings.theme || 'classic',
                 theme_config: settings.theme_config || {},
             });
@@ -298,6 +304,8 @@ export default function FormBuilderPage() {
                 header_image_url: settings.header_image_url || null,
                 background_color: settings.background_color || null,
                 captcha_enabled: !!settings.captcha_enabled,
+                hide_footer: !!settings.hide_footer,
+                register_as_attendee: !!settings.register_as_attendee,
                 theme: settings.theme || 'classic',
                 theme_config: settings.theme_config || {},
             });
@@ -550,6 +558,8 @@ export default function FormBuilderPage() {
                 header_image_url: (settings.header_image_url || '').trim() || null,
                 background_color: (settings.background_color || '').trim() || null,
                 captcha_enabled: !!settings.captcha_enabled,
+                hide_footer: !!settings.hide_footer,
+                register_as_attendee: !!settings.register_as_attendee,
                 theme: settings.theme || 'classic',
                 theme_config: settings.theme_config || {},
                 ...payment_payload,
@@ -586,6 +596,8 @@ export default function FormBuilderPage() {
                 payment_currency: form.payment_currency || null,
                 payment_tiers: form.payment_tiers || null,
                 payment_description: form.payment_description || null,
+                hide_footer: !!form.hide_footer,
+                register_as_attendee: !!form.register_as_attendee,
             });
             await load(true);
         } catch (err) {
@@ -1471,6 +1483,55 @@ export default function FormBuilderPage() {
                         checked={!!settings.captcha_enabled}
                         onChange={e => setSettings(s => ({ ...s, captcha_enabled: e.target.checked }))}
                     />
+
+                    <Form.Check
+                        type="switch"
+                        id="form-hide-footer-switch"
+                        className="mt-2"
+                        label={settings.hide_footer ? 'Hide "Powered by" footer on the public form' : 'Show "Powered by" footer on the public form'}
+                        checked={!!settings.hide_footer}
+                        onChange={e => setSettings(s => ({ ...s, hide_footer: e.target.checked }))}
+                    />
+
+                    <Form.Check
+                        type="switch"
+                        id="form-register-attendee-switch"
+                        className="mt-2"
+                        label={
+                            settings.register_as_attendee
+                                ? 'Register submitters as attendees — each submission also appears in the Attendees list'
+                                : 'Do not auto-register — submissions only live in Form Responses'
+                        }
+                        checked={!!settings.register_as_attendee}
+                        onChange={e => setSettings(s => ({ ...s, register_as_attendee: e.target.checked }))}
+                    />
+                    {settings.register_as_attendee && (
+                        <div style={{ marginLeft: '2.5rem', marginTop: 8 }}>
+                            <Form.Label style={{ fontSize: '0.82rem', marginBottom: 4 }}>
+                                Register attendees under this event
+                            </Form.Label>
+                            <Form.Select
+                                className="form-select-dark"
+                                size="sm"
+                                value={settings.event_id || ''}
+                                onChange={e => setSettings(s => ({ ...s, event_id: e.target.value }))}
+                                isInvalid={!settings.event_id}
+                            >
+                                <option value="">— Select an event —</option>
+                                {events.map(ev => <option key={ev.id} value={ev.id}>{ev.title}</option>)}
+                            </Form.Select>
+                            {!settings.event_id && (
+                                <Form.Text className="text-danger" style={{ fontSize: '0.78rem' }}>
+                                    Pick an event — attendees can't be created without one.
+                                </Form.Text>
+                            )}
+                            {settings.event_id && (
+                                <Form.Text className="text-muted" style={{ fontSize: '0.78rem' }}>
+                                    Also sets this as the form's linked event.
+                                </Form.Text>
+                            )}
+                        </div>
+                    )}
 
                     <hr style={{ borderColor: 'rgba(255,255,255,0.08)', margin: '20px 0' }} />
 
