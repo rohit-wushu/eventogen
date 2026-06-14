@@ -1,21 +1,23 @@
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
 const sharp = require('sharp');
+const { removeBackground: cutoutRemoveBackground, CutoutError } = require('../services/cutout');
 
-// Run the BG-removal worker in a child Node process. This avoids a native-lib
-// conflict (sharp + @imgly/background-removal-node share lower-level libs like
-// GLib and segfault when both load in the same process).
-const runBgRemovalWorker = (inputPath, outputPath) => new Promise((resolve, reject) => {
-    const workerPath = path.join(__dirname, 'bgRemoveWorker.js');
-    execFile(process.execPath, [workerPath, inputPath, outputPath], { timeout: 60_000 }, (err, stdout, stderr) => {
-        if (err) {
-            const detail = (stderr || err.message).toString().trim();
-            return reject(new Error(detail));
-        }
-        resolve();
+// Run Cutout.pro's background-removal API. Reads the input file, calls
+// Cutout, writes the transparent-PNG result to outputPath. Throws on any
+// failure so the caller can fall back to a no-BG-removal path.
+const runBgRemovalWorker = async (inputPath, outputPath) => {
+    const buffer = fs.readFileSync(inputPath);
+    const ext = path.extname(inputPath).toLowerCase();
+    const mime = ext === '.png' ? 'image/png'
+              : ext === '.webp' ? 'image/webp'
+              : 'image/jpeg';
+    const { buffer: result } = await cutoutRemoveBackground(buffer, {
+        contentType: mime,
+        filename: path.basename(inputPath),
     });
-});
+    fs.writeFileSync(outputPath, result);
+};
 
 const cropTo400 = (input, outputPath) =>
     sharp(input)

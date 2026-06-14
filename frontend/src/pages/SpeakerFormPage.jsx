@@ -175,11 +175,13 @@ export default function SpeakerFormPage() {
     const handleCropConfirm = () => {
         const cropper = cropperRef.current?.cropper;
         if (!cropper) return;
+        // No fillColor — we want PNG transparency preserved. cropperjs's
+        // default `fillColor: '#fff'` was flattening Cutout-enhanced
+        // transparent photos to white on every crop confirm.
         const canvas = cropper.getCroppedCanvas({
             width: 400,
             height: 400,
             imageSmoothingQuality: 'high',
-            fillColor: '#fff'
         });
         canvas.toBlob((blob) => {
             if (!blob) return;

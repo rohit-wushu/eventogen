@@ -2777,7 +2777,6 @@ function ShareSpeakerModal({ onClose, onSubmit }) {
             width: 400,
             height: 400,
             imageSmoothingQuality: 'high',
-            fillColor: '#fff'
         });
         canvas.toBlob((blob) => {
             if (!blob) return;
