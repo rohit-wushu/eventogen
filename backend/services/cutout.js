@@ -7,6 +7,8 @@
 // All requests go from the server only — the API key never reaches the
 // browser. Set CUTOUT_API_KEY in backend/.env.
 
+const sharp = require('sharp');
+
 const CUTOUT_BASE = 'https://www.cutout.pro';
 
 class CutoutError extends Error {
@@ -16,6 +18,28 @@ class CutoutError extends Error {
         this.status = status;
         this.payload = payload;
     }
+}
+
+// Cutout's /photoEnhance flattens any alpha channel into white. When the
+// source is a transparent PNG (e.g. a speaker headshot whose background has
+// already been removed), we want the enhanced output to stay transparent.
+// This helper takes the original alpha mask and re-applies it to the
+// enhanced buffer, resizing the mask to match if Cutout upscaled the image.
+async function preserveAlpha(originalBuffer, enhancedBuffer) {
+    const srcMeta = await sharp(originalBuffer).metadata();
+    if (!srcMeta.hasAlpha) return enhancedBuffer; // nothing to preserve
+    const [alphaMask, enhancedMeta] = await Promise.all([
+        sharp(originalBuffer).ensureAlpha().extractChannel('alpha').toBuffer({ resolveWithObject: true }),
+        sharp(enhancedBuffer).metadata(),
+    ]);
+    const resizedMask = await sharp(alphaMask.data, { raw: { width: srcMeta.width, height: srcMeta.height, channels: 1 } })
+        .resize(enhancedMeta.width, enhancedMeta.height, { kernel: 'lanczos3' })
+        .toBuffer();
+    return sharp(enhancedBuffer)
+        .removeAlpha()              // drop the white-on-alpha Cutout gave us
+        .joinChannel(resizedMask, { raw: { width: enhancedMeta.width, height: enhancedMeta.height, channels: 1 } })
+        .png()
+        .toBuffer();
 }
 
 // Lazy-read the key so a missing var produces a clear error at first use
@@ -56,12 +80,11 @@ async function enhanceImage(buffer, { contentType = 'image/png', filename = 'pho
         throw new CutoutError(`Cutout enhance failed (HTTP ${res.status})`, { status: res.status, payload: detail });
     }
 
+    let enhancedBuffer;
     if (ct.startsWith('image/')) {
         const ab = await res.arrayBuffer();
-        return { buffer: Buffer.from(ab), contentType: ct };
-    }
-
-    if (ct.includes('json')) {
+        enhancedBuffer = Buffer.from(ab);
+    } else if (ct.includes('json')) {
         const json = await res.json();
         // Cutout's JSON envelope shape: { code: 0, data: { imageUrl: '...' } }
         // Non-zero code = quota / auth / format error from their side.
@@ -74,10 +97,22 @@ async function enhanceImage(buffer, { contentType = 'image/png', filename = 'pho
         const dl = await fetch(url);
         if (!dl.ok) throw new CutoutError(`Could not download enhanced image (HTTP ${dl.status})`);
         const ab = await dl.arrayBuffer();
-        return { buffer: Buffer.from(ab), contentType: dl.headers.get('content-type') || 'image/png' };
+        enhancedBuffer = Buffer.from(ab);
+    } else {
+        throw new CutoutError(`Unexpected Cutout response content-type: ${ct}`);
     }
 
-    throw new CutoutError(`Unexpected Cutout response content-type: ${ct}`);
+    // Re-attach the original alpha channel so transparent inputs stay
+    // transparent (Cutout flattens alpha to white). No-op for opaque sources.
+    try {
+        const finalBuffer = await preserveAlpha(buffer, enhancedBuffer);
+        return { buffer: finalBuffer, contentType: 'image/png' };
+    } catch (err) {
+        // If alpha re-application fails for any reason, fall back to the raw
+        // enhanced bytes so the user still gets the enhanced result.
+        console.warn('[cutout] preserveAlpha failed, returning flat enhanced image:', err.message);
+        return { buffer: enhancedBuffer, contentType: ct.startsWith('image/') ? ct : 'image/png' };
+    }
 }
 
 // Cutout.pro background-removal endpoint. mattingType=6 is the documented

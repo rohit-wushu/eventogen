@@ -179,6 +179,7 @@ const createDatabase = async () => {
         const alterSpeakerQueries = [
             'ALTER TABLE speakers ADD COLUMN salutation VARCHAR(50) AFTER name',
             'ALTER TABLE speakers ADD COLUMN office_no VARCHAR(50) AFTER email',
+            'ALTER TABLE speakers ADD COLUMN mobile_no VARCHAR(50) AFTER office_no',
             'ALTER TABLE speakers ADD COLUMN category VARCHAR(100) AFTER mobile_no',
             'ALTER TABLE speakers ADD COLUMN spokesperson_name VARCHAR(255) AFTER category',
             'ALTER TABLE speakers ADD COLUMN sns_card_url VARCHAR(255) AFTER event_id',
