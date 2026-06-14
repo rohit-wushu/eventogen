@@ -31,29 +31,21 @@ async function preserveAlpha(originalBuffer, enhancedBuffer) {
 
     const enhancedMeta = await sharp(enhancedBuffer).metadata();
 
-    // Extract the source alpha as RAW bytes (single channel, one byte per pixel).
-    // The .raw() call here is critical — without it, toBuffer() returns PNG-
-    // encoded bytes, which would then fail to be re-interpreted as raw later.
-    const alphaRaw = await sharp(originalBuffer)
+    // Extract source's alpha as a grayscale PNG (pixel value = alpha value).
+    // Then resize to match Cutout's (possibly upscaled) enhanced dimensions.
+    const resizedAlphaPng = await sharp(originalBuffer)
         .ensureAlpha()
         .extractChannel('alpha')
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-
-    // Resize the alpha mask to match Cutout's (possibly upscaled) output, then
-    // dump it back to raw so joinChannel can accept it.
-    const resizedMaskRaw = await sharp(alphaRaw.data, {
-            raw: { width: alphaRaw.info.width, height: alphaRaw.info.height, channels: 1 },
-        })
         .resize(enhancedMeta.width, enhancedMeta.height, { kernel: 'lanczos3' })
-        .raw()
+        .png()
         .toBuffer();
 
+    // Composite with `dest-in` blend: the result keeps the enhanced pixels
+    // wherever the alpha mask is opaque, and makes them transparent wherever
+    // the mask is transparent. This is sharp's idiomatic alpha-mask apply.
     return sharp(enhancedBuffer)
-        .removeAlpha()              // drop whatever Cutout gave us as alpha
-        .joinChannel(resizedMaskRaw, {
-            raw: { width: enhancedMeta.width, height: enhancedMeta.height, channels: 1 },
-        })
+        .ensureAlpha()              // make sure dest has an alpha channel
+        .composite([{ input: resizedAlphaPng, blend: 'dest-in' }])
         .png()
         .toBuffer();
 }
