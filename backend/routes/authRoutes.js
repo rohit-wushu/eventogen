@@ -53,9 +53,17 @@ router.post('/signup', async (req, res) => {
             slug = `${baseSlug}-${crypto.randomBytes(3).toString('hex')}`;
         }
 
-        // Free plan gives a 7-day trial window. Matches what's shown in the
-        // signup page and on the Billing / Plans screens.
-        const trialEnds = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        // Trial length is configurable per-plan in the super-admin Plans page.
+        // Read from `plans.trial_days` for the Free plan; fall back to 7 if
+        // the column doesn't exist (e.g. migrate_plan_trial_days hasn't run).
+        let trialDays = 7;
+        try {
+            const [[row]] = await conn.query(
+                `SELECT trial_days FROM plans WHERE code = 'free' LIMIT 1`
+            );
+            if (row && Number(row.trial_days) > 0) trialDays = Number(row.trial_days);
+        } catch { /* plans.trial_days missing — keep default */ }
+        const trialEnds = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
         const [tenantResult] = await conn.query(
             `INSERT INTO tenants (name, slug, plan, status, trial_ends_at) VALUES (?, ?, 'free', 'trial', ?)`,
             [org_name.trim(), slug, trialEnds]

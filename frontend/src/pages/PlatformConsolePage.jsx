@@ -1529,6 +1529,7 @@ function PlansTab() {
         max_attendees: 200,
         max_users: 3,
         max_storage_mb: 100,
+        trial_days: 7,
         features: '',
         is_public: 1
     });
@@ -1812,6 +1813,7 @@ function PlansTab() {
                                         <LimitInput label="Max attendees" value={editing.max_attendees} onChange={v => setEditing({ ...editing, max_attendees: v })} />
                                         <LimitInput label="Max team users" value={editing.max_users} onChange={v => setEditing({ ...editing, max_users: v })} />
                                         <LimitInput label="Max storage (MB)" value={editing.max_storage_mb ?? 0} onChange={v => setEditing({ ...editing, max_storage_mb: v })} />
+                                        <LimitInput label="Trial days" value={editing.trial_days ?? 7} onChange={v => setEditing({ ...editing, trial_days: v })} />
                                     </div>
                                 </SectionCard>
 
@@ -1852,6 +1854,7 @@ function PlansTab() {
                                             max_attendees: Number(editing.max_attendees),
                                             max_users: Number(editing.max_users),
                                             max_storage_mb: Number(editing.max_storage_mb ?? 0),
+                                            trial_days: Number(editing.trial_days ?? 7),
                                             features: featuresArr,
                                             is_public: editing.is_public ? 1 : 0
                                         });

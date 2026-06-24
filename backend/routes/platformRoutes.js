@@ -517,6 +517,7 @@ router.post('/plans', async (req, res) => {
     const {
         code, name, price_inr = 0, billing_cycle = 'monthly',
         max_events = 0, max_speakers = 0, max_attendees = 0, max_users = 0,
+        trial_days = 7,
         features = [], is_public = 1
     } = req.body || {};
 
@@ -532,15 +533,25 @@ router.post('/plans', async (req, res) => {
         const [[existing]] = await db.query('SELECT id FROM plans WHERE code = ? LIMIT 1', [code]);
         if (existing) return res.status(409).json({ error: 'A plan with this code already exists' });
 
+        // Detect optional trial_days column for older deployments.
+        const [hasTrialDays] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'trial_days'`
+        );
+        const trialCol = hasTrialDays.length > 0 ? ', trial_days' : '';
+        const trialVal = hasTrialDays.length > 0 ? ', ?' : '';
+        const trialArg = hasTrialDays.length > 0 ? [Math.max(0, Number(trial_days) || 0)] : [];
+
         const [r] = await db.query(
             `INSERT INTO plans (code, name, price_inr, billing_cycle, max_events, max_speakers,
-                                max_attendees, max_users, features, is_public)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                max_attendees, max_users, features, is_public${trialCol})
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?${trialVal})`,
             [
                 code, name, Number(price_inr), billing_cycle,
                 Number(max_events), Number(max_speakers), Number(max_attendees), Number(max_users),
                 JSON.stringify(Array.isArray(features) ? features : []),
-                is_public ? 1 : 0
+                is_public ? 1 : 0,
+                ...trialArg
             ]
         );
         res.json({ ok: true, id: r.insertId });
@@ -582,9 +593,9 @@ router.delete('/plans/:id', async (req, res) => {
 
 router.put('/plans/:id', async (req, res) => {
     const id = Number(req.params.id);
-    const { name, price_inr, max_events, max_speakers, max_attendees, max_users, max_storage_mb, features, is_public } = req.body || {};
+    const { name, price_inr, max_events, max_speakers, max_attendees, max_users, max_storage_mb, trial_days, features, is_public } = req.body || {};
     try {
-        // Tolerate older deployments where max_storage_mb hasn't been migrated in.
+        // Tolerate older deployments where max_storage_mb / trial_days haven't been migrated in.
         const [hasStorage] = await db.query(
             `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_storage_mb'`
@@ -593,6 +604,15 @@ router.put('/plans/:id', async (req, res) => {
             ? 'max_storage_mb = COALESCE(?, max_storage_mb),'
             : '';
         const storageParam = hasStorage.length > 0 ? [max_storage_mb ?? null] : [];
+
+        const [hasTrialDays] = await db.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'trial_days'`
+        );
+        const trialCol = hasTrialDays.length > 0
+            ? 'trial_days = COALESCE(?, trial_days),'
+            : '';
+        const trialParam = hasTrialDays.length > 0 ? [trial_days ?? null] : [];
 
         await db.query(
             `UPDATE plans SET
@@ -603,6 +623,7 @@ router.put('/plans/:id', async (req, res) => {
                 max_attendees = COALESCE(?, max_attendees),
                 max_users = COALESCE(?, max_users),
                 ${storageCol}
+                ${trialCol}
                 features = COALESCE(?, features),
                 is_public = COALESCE(?, is_public)
              WHERE id = ?`,
@@ -614,6 +635,7 @@ router.put('/plans/:id', async (req, res) => {
                 max_attendees ?? null,
                 max_users ?? null,
                 ...storageParam,
+                ...trialParam,
                 features != null ? JSON.stringify(features) : null,
                 is_public != null ? (is_public ? 1 : 0) : null,
                 id
