@@ -261,6 +261,17 @@ const postImageOp = (path) => (file) => {
 export const enhanceImage         = postImageOp('/image/enhance');
 export const removeImageBackground = postImageOp('/image/remove-bg');
 
+// Plain image upload — store the file, get a persistable URL back. Used by
+// the SNS template editor so the master background doesn't get lost (blob:
+// URLs are stripped on save).
+export const uploadImage = (file) => {
+    const fd = new FormData();
+    fd.append('image', file);
+    return api.post('/image/upload', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+};
+
 // Partners
 export const getPartners = (eventId) => api.get('/partners');
 export const getPartner = (id) => api.get(`/partners/${id}`);

@@ -6,7 +6,7 @@ import 'cropperjs/dist/cropper.css';
 import { Button, Form, Spinner, Accordion, Tabs, Tab } from 'react-bootstrap';
 import { toPng } from 'html-to-image';
 import { BsDownload, BsArrowLeft, BsArrowsMove, BsLayoutTextWindow, BsShieldLock, BsMagic, BsStars, BsChatDots, BsSend, BsRobot, BsImage, BsCheckCircleFill, BsTextLeft, BsDistributeVertical, BsLightningChargeFill } from 'react-icons/bs';
-import { getEvent, updateEventTemplate, updateEventAttendingTemplate, bulkApplySNSTemplate, bulkApplyAttendingTemplate } from '../services/api';
+import { getEvent, updateEventTemplate, updateEventAttendingTemplate, bulkApplySNSTemplate, bulkApplyAttendingTemplate, uploadImage } from '../services/api';
 import Draggable from 'react-draggable';
 import { getImageUrl } from '../utils/imageUrl';
 
@@ -454,9 +454,23 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
         }
     };
 
-    const handleBgUpload = (e) => {
+    // Background images must be uploaded to the server so the saved
+    // template payload can persist a real URL. The save handler strips
+    // `blob:` URLs (they're session-scoped and meaningless after reload),
+    // so we upload immediately on file pick and store the returned
+    // `/uploads/...` URL instead.
+    const handleBgUpload = async (e) => {
         const file = e.target.files[0];
-        if (file) setBackground(URL.createObjectURL(file));
+        if (!file) return;
+        // Show the local preview straight away so the editor feels snappy;
+        // we'll replace it with the persisted URL once the upload returns.
+        setBackground(URL.createObjectURL(file));
+        try {
+            const { data } = await uploadImage(file);
+            if (data?.url) setBackground(data.url);
+        } catch (err) {
+            alert('Background upload failed: ' + (err.response?.data?.error || err.message));
+        }
     };
 
     const handlePhotoUpload = (e) => {
