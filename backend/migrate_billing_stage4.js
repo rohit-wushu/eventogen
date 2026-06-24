@@ -69,7 +69,7 @@ async function run() {
         {
             code: 'free', name: 'Free', price_inr: 0,
             max_events: 1, max_speakers: 50, max_attendees: 200, max_users: 3,
-            features: ['10-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support']
+            features: ['7-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support']
         },
         {
             code: 'pro', name: 'Pro', price_inr: 2999,

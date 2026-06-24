@@ -250,7 +250,7 @@ export default function LoginPage() {
                     ) : mode === 'signup' ? (
                         <Form onSubmit={handleSignup}>
                             <h2 className="lx-title">Create your workspace</h2>
-                            <p className="lx-desc">10-day free trial · No credit card required.</p>
+                            <p className="lx-desc">7-day free trial · No credit card required.</p>
 
                             {error && <Alert className="lx-alert">{error}</Alert>}
 

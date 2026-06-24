@@ -62,7 +62,7 @@ async function getOrCreateSubscriptionRow(tenantId) {
             `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans' AND COLUMN_NAME = 'max_storage_mb'`
         );
-        const features = JSON.stringify(['10-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support']);
+        const features = JSON.stringify(['7-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support']);
         if (hasStorage.length > 0) {
             await db.query(
                 `INSERT INTO plans (code, name, price_inr, max_events, max_speakers, max_attendees, max_users, max_storage_mb, features)

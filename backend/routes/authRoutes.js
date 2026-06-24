@@ -53,9 +53,9 @@ router.post('/signup', async (req, res) => {
             slug = `${baseSlug}-${crypto.randomBytes(3).toString('hex')}`;
         }
 
-        // Free plan gives a 10-day trial window. Matches what's shown in the
+        // Free plan gives a 7-day trial window. Matches what's shown in the
         // signup page and on the Billing / Plans screens.
-        const trialEnds = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+        const trialEnds = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         const [tenantResult] = await conn.query(
             `INSERT INTO tenants (name, slug, plan, status, trial_ends_at) VALUES (?, ?, 'free', 'trial', ?)`,
             [org_name.trim(), slug, trialEnds]
@@ -76,7 +76,7 @@ router.post('/signup', async (req, res) => {
         const seedPlans = [
             { code: 'free', name: 'Free', price_inr: 0,
               max_events: 1, max_speakers: 50, max_attendees: 200, max_users: 3, max_storage_mb: 100,
-              features: ['10-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support'] },
+              features: ['7-day free trial', '1 active event', 'Up to 50 speakers', 'Basic support'] },
             { code: 'pro', name: 'Pro', price_inr: 2999,
               max_events: 10, max_speakers: 500, max_attendees: 2500, max_users: 20, max_storage_mb: 5120,
               features: ['10 concurrent events', 'Up to 500 speakers per event', 'Google Sheet imports', 'Priority support'] },
