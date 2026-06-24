@@ -316,6 +316,16 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
     });
 
     const handleSaveTemplate = async () => {
+        if (bgUploading) {
+            alert('Background is still uploading. Please wait a moment then click Save again.');
+            return;
+        }
+        // Catch the blob: URL case explicitly — if it's still blob: at save
+        // time the upload failed silently (network blip, file too big, etc).
+        if (background && background.startsWith('blob:')) {
+            const ok = window.confirm('The background image did not finish uploading. Save the template without a background? Click Cancel to retry the upload first.');
+            if (!ok) return;
+        }
         setSaving(true);
         try {
             const saveFn = isAttending ? updateEventAttendingTemplate : updateEventTemplate;
@@ -337,6 +347,14 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
     // until each one is re-opened in the generator.
     const [applying, setApplying] = useState(false);
     const handleSaveAndApply = async () => {
+        if (bgUploading) {
+            alert('Background is still uploading. Please wait a moment then try again.');
+            return;
+        }
+        if (background && background.startsWith('blob:')) {
+            const ok = window.confirm('The background image did not finish uploading. Apply the template without a background? Click Cancel to retry the upload first.');
+            if (!ok) return;
+        }
         const kind = isAttending ? 'attending' : 'speaker-announcement';
         if (!window.confirm(`Save this master template and push it onto every existing speaker's ${kind} card in this event? Any per-card customisations they made will be overwritten.`)) return;
         setApplying(true);
@@ -459,17 +477,21 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
     // `blob:` URLs (they're session-scoped and meaningless after reload),
     // so we upload immediately on file pick and store the returned
     // `/uploads/...` URL instead.
+    const [bgUploading, setBgUploading] = useState(false);
     const handleBgUpload = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
         // Show the local preview straight away so the editor feels snappy;
         // we'll replace it with the persisted URL once the upload returns.
         setBackground(URL.createObjectURL(file));
+        setBgUploading(true);
         try {
             const { data } = await uploadImage(file);
             if (data?.url) setBackground(data.url);
         } catch (err) {
             alert('Background upload failed: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setBgUploading(false);
         }
     };
 
