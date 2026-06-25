@@ -1219,7 +1219,7 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete, cardTyp
                             if (isAttending) {
                                 if (key === 'name')             text = 'I am attending';
                                 else if (key === 'designation') text = event?.title || '';
-                                else                            text = [currentSpeaker.name, currentSpeaker.designation].filter(Boolean).join(' · ');
+                                else                            text = [currentSpeaker.name, currentSpeaker.designation, currentSpeaker.company].filter(Boolean).join(' · ');
                             } else {
                                 text = key === 'name' ? currentSpeaker.name : key === 'designation' ? currentSpeaker.designation : currentSpeaker.company;
                             }

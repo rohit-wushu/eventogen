@@ -256,7 +256,7 @@ function SNSGeneratorInternal({ cardType = 'speaker' }) {
                         const seedName        = isAttending ? 'I am attending' : (s.name || '');
                         const seedDesignation = isAttending ? (evt.title || s.event_title || '') : (s.designation || 'Speaker');
                         const seedCompany     = isAttending
-                            ? [s.name, s.designation].filter(Boolean).join(' · ')
+                            ? [s.name, s.designation, s.company].filter(Boolean).join(' · ')
                             : (s.company || '');
 
                         setElements(prev => ({
