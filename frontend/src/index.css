@@ -4562,6 +4562,18 @@ div.api-ep-desc,
     }
 }
 
+/* ─── Super admin Plans tab: 4 across, gracefully wrap on smaller screens ─── */
+.platform-plans-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+@media (max-width: 1400px) {
+    .platform-plans-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+}
+@media (max-width: 1024px) {
+    .platform-plans-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+@media (max-width: 640px) {
+    .platform-plans-grid { grid-template-columns: 1fr !important; }
+}
+
 /* ─── Branded AppLoader (animated "A" mark) ─── */
 .app-loader-wrap { color: var(--text-primary); }
 .dashboard-loader-wrap {

@@ -342,9 +342,11 @@ export default function BillingPage() {
                                 <Badge bg="success" style={{ position: 'absolute', top: 12, right: 12 }}>Current</Badge>
                             )}
                             <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                                {p.code === 'enterprise' ? <><BsStars className="me-1" /> Enterprise</> :
-                                 p.code === 'pro' ? <><BsLightningChargeFill className="me-1" /> Pro</> :
-                                 <><BsShieldCheck className="me-1" /> Free</>}
+                                {p.code === 'enterprise' ? <BsStars className="me-1" /> :
+                                 p.code === 'pro' ? <BsLightningChargeFill className="me-1" /> :
+                                 p.price_inr === 0 ? <BsShieldCheck className="me-1" /> :
+                                 <BsStars className="me-1" />}
+                                {p.name || p.code || 'Plan'}
                             </div>
                             <div style={{ fontSize: 30, fontWeight: 700, color: 'var(--text-primary)', marginTop: 4 }}>
                                 {fmtInr(p.price_inr)}

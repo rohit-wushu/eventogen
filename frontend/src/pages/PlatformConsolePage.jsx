@@ -1558,10 +1558,10 @@ function PlansTab() {
             {/* ───── Pricing cards — light/white cards floating on the dark canvas.
                 Matches a marketing-style pricing layout: clean white body, colored
                 gradient CTA strip at the bottom, "Ideal for" footnote beneath. */}
-            <div style={{
+            <div className="platform-plans-grid" style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-                gap: 40,
+                gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+                gap: 24,
                 padding: '20px 10px',
                 alignItems: 'start'
             }}>
