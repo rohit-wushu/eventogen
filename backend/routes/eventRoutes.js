@@ -202,9 +202,16 @@ router.post('/:id/bulk-apply-sns-template', protect, async (req, res) => {
 
         // Apply template design to speakers within this tenant for this event.
         // Skip soft-deleted speakers — they shouldn't get the new template applied.
+        // mysql2 auto-parses JSON columns to objects; the UPDATE's prepared
+        // statement then stringifies that object into '[object Object]' which
+        // MySQL rejects as invalid JSON. Explicit JSON.stringify avoids the
+        // round-trip ambiguity for both string and object shapes.
+        const templateJson = typeof events[0].sns_card_template === 'string'
+            ? events[0].sns_card_template
+            : JSON.stringify(events[0].sns_card_template);
         const [result] = await db.query(
             'UPDATE speakers SET sns_card_design=? WHERE event_id=? AND tenant_id=? AND deleted_at IS NULL',
-            [events[0].sns_card_template, req.params.id, req.tenantId]
+            [templateJson, req.params.id, req.tenantId]
         );
         const [countResult] = await db.query('SELECT COUNT(*) as count FROM speakers WHERE event_id=? AND tenant_id=? AND deleted_at IS NULL', [req.params.id, req.tenantId]);
         res.json({ message: 'Template applied', affected: result.affectedRows, total: countResult[0].count });
@@ -248,9 +255,14 @@ router.post('/:id/bulk-apply-attending-template', protect, async (req, res) => {
         if (!events.length) return res.status(404).json({ error: 'Event not found' });
         if (!events[0].attending_card_template) return res.status(400).json({ error: 'No attending-card master template defined for this event. Please design one first.' });
 
+        // See bulk-apply-sns-template above — JSON columns come back as
+        // objects from mysql2 and must be re-stringified before re-binding.
+        const templateJson = typeof events[0].attending_card_template === 'string'
+            ? events[0].attending_card_template
+            : JSON.stringify(events[0].attending_card_template);
         const [result] = await db.query(
             'UPDATE speakers SET attending_card_design=? WHERE event_id=? AND tenant_id=? AND deleted_at IS NULL',
-            [events[0].attending_card_template, req.params.id, req.tenantId]
+            [templateJson, req.params.id, req.tenantId]
         );
         const [countResult] = await db.query('SELECT COUNT(*) as count FROM speakers WHERE event_id=? AND tenant_id=? AND deleted_at IS NULL', [req.params.id, req.tenantId]);
         res.json({ message: 'Attending template applied', affected: result.affectedRows, total: countResult[0].count });
