@@ -1211,6 +1211,19 @@ function MiniLimit({ label, value }) {
     );
 }
 
+// Compact limits cell for the v3 dark plan card. Shows ∞ glyph for unlimited
+// (numeric 0 by convention) so admins see capacity at a glance.
+function PlanLimit({ label, value, isString = false }) {
+    const unlimited = isString ? value === '∞' : Number(value) === 0;
+    const display = isString ? value : (unlimited ? '∞' : Number(value).toLocaleString('en-IN'));
+    return (
+        <div className="plan-card-v3__limit">
+            <div className="plan-card-v3__limit-label">{label}</div>
+            <div className={`plan-card-v3__limit-value ${unlimited ? 'is-unlimited' : ''}`}>{display}</div>
+        </div>
+    );
+}
+
 // Editable limit field used inside the edit modal. Typing 0 = unlimited, and
 // we surface that hint inline so admins don't need to guess.
 function LimitInput({ label, value, onChange }) {
@@ -1555,166 +1568,114 @@ function PlansTab() {
                 </Button>
             </div>
 
-            {/* ───── Pricing cards — light/white cards floating on the dark canvas.
-                Matches a marketing-style pricing layout: clean white body, colored
-                gradient CTA strip at the bottom, "Ideal for" footnote beneath. */}
+            {/* ───── Pricing cards — compact, dark-themed cards that fit cleanly
+                at 4-across. Theme accents are derived from the plan's rank in
+                the catalog (cheapest → green, dearest → amber) so any custom
+                plan code (e.g. "premium") still gets a sensible look without
+                code-by-code mapping. */}
             <div className="platform-plans-grid" style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-                gap: 24,
-                padding: '20px 10px',
-                alignItems: 'start'
+                gap: 16,
+                padding: '8px 10px 20px',
+                alignItems: 'stretch'
             }}>
-                {plans.map(p => {
-                    const theme = PLAN_THEMES[p.code] || PLAN_THEMES.free;
-                    const copy = PLAN_COPY[p.code] || PLAN_COPY.free;
-                    const highlighted = p.code === 'pro';
+                {[...plans].sort((a, b) => Number(a.price_inr) - Number(b.price_inr)).map((p, idx, arr) => {
                     const features = Array.isArray(p.features) ? p.features : [];
+                    // Theme by rank — cheapest first, costliest last. Keeps custom
+                    // plan codes from defaulting to the same green every time.
+                    const accentRamp = ['#10b981', '#38bdf8', '#8b5cf6', '#f59e0b', '#ec4899'];
+                    const gradientRamp = [
+                        'linear-gradient(90deg, #a3e635, #facc15)',
+                        'linear-gradient(90deg, #38bdf8, #22d3ee)',
+                        'linear-gradient(90deg, #8b5cf6, #6366f1)',
+                        'linear-gradient(90deg, #f59e0b, #ec4899)',
+                        'linear-gradient(90deg, #ec4899, #8b5cf6)',
+                    ];
+                    const accent = accentRamp[Math.min(idx, accentRamp.length - 1)];
+                    const gradient = gradientRamp[Math.min(idx, gradientRamp.length - 1)];
+                    // "Most popular" badge: highest-price plan in the catalog gets
+                    // the highlight (admin can rearrange by editing prices).
+                    const isHighlighted = idx === arr.length - 2 && arr.length >= 3;
+                    const storageLabel = p.max_storage_mb
+                        ? (p.max_storage_mb >= 1024 ? `${(p.max_storage_mb / 1024).toFixed(1)} GB` : `${p.max_storage_mb} MB`)
+                        : '∞';
+
                     return (
-                        <div key={p.id} style={{ display: 'flex', flexDirection: 'column' }}>
-                            <div className="plan-card-v2" style={{
-                                position: 'relative',
-                                background: '#ffffff',
-                                borderRadius: 18,
-                                padding: '30px 28px 0',
-                                boxShadow: highlighted
-                                    ? '0 24px 48px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.9)'
-                                    : '0 16px 36px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.8)',
-                                overflow: 'hidden',
-                                display: 'flex', flexDirection: 'column'
-                            }}>
-                                {/* Header row — plan name + optional POPULAR pill */}
-                                <div className="d-flex justify-content-between align-items-start">
-                                    <div style={{
-                                        fontSize: 22, fontWeight: 700, color: '#111',
-                                        letterSpacing: '-0.01em'
-                                    }}>
-                                        {p.name}
-                                    </div>
-                                    {highlighted && (
-                                        <span className="plan-pill-popular">POPULAR</span>
-                                    )}
-                                    {!p.is_public && !highlighted && (
-                                        <span className="plan-pill-hidden">HIDDEN</span>
-                                    )}
-                                </div>
+                        <div key={p.id} className={`plan-card-v3 ${isHighlighted ? 'is-highlighted' : ''}`}
+                            onClick={() => setEditing({ ...p, features: features.join('\n') })}
+                            style={{ borderColor: isHighlighted ? accent : 'rgba(255,255,255,0.08)' }}
+                            title="Click to edit"
+                        >
+                            {/* Top accent stripe — colored bar that anchors the card to its tier */}
+                            <div className="plan-card-v3__stripe" style={{ background: gradient }} />
 
-                                {/* Price */}
-                                <div style={{ display: 'flex', alignItems: 'baseline', marginTop: 14, gap: 4 }}>
-                                    <span style={{ fontSize: 46, fontWeight: 800, color: '#111', letterSpacing: '-0.03em', lineHeight: 1 }}>
-                                        {p.price_inr === 0 ? 'Free' : `₹${Number(p.price_inr).toLocaleString('en-IN')}`}
-                                    </span>
-                                    {p.price_inr > 0 && (
-                                        <span style={{ fontSize: 14, color: '#6b7280', fontWeight: 500 }}>
-                                            / month
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Tagline */}
-                                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 10, marginBottom: 18 }}>
-                                    {copy.tagline}
-                                </div>
-
-                                {/* Gradient divider — colored strip between price and features */}
-                                <div style={{
-                                    height: 1.5,
-                                    background: copy.ctaGradient,
-                                    marginBottom: 20,
-                                    opacity: 0.7
-                                }} />
-
-                                {/* Features list */}
-                                {features.length > 0 && (
-                                    <ul style={{ listStyle: 'none', padding: 0, margin: 0, flexGrow: 1 }}>
-                                        {features.map((f, i) => {
-                                            // Support optional "Title | Description" format; fall back to
-                                            // just showing the title if no pipe is present.
-                                            const [title, ...descParts] = String(f).split('|').map(s => s.trim());
-                                            const desc = descParts.join(' | ');
-                                            return (
-                                                <li key={i} style={{
-                                                    display: 'flex', gap: 12, alignItems: 'flex-start',
-                                                    padding: '10px 0',
-                                                }}>
-                                                    <span style={{ marginTop: 2, flexShrink: 0 }}>
-                                                        <CheckIcon gradient={copy.ctaGradient} />
-                                                    </span>
-                                                    <div>
-                                                        <div style={{ fontSize: 14, fontWeight: 600, color: '#111' }}>
-                                                            {title}
-                                                        </div>
-                                                        {desc && (
-                                                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2, lineHeight: 1.5 }}>
-                                                                {desc}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
-                                )}
-
-                                {/* Limits block — small, grey, underneath features. */}
-                                <div style={{
-                                    display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
-                                    gap: 8, marginTop: 18, marginBottom: 26,
-                                    padding: '12px 14px', borderRadius: 12,
-                                    background: '#f9fafb', border: '1px solid #eef0f3'
-                                }}>
-                                    <MiniLimit label="Events" value={p.max_events} />
-                                    <MiniLimit label="Speakers" value={p.max_speakers} />
-                                    <MiniLimit label="Attendees" value={p.max_attendees} />
-                                    <MiniLimit label="Team" value={p.max_users} />
-                                    <MiniLimit label="Storage" value={p.max_storage_mb ? `${p.max_storage_mb >= 1024 ? (p.max_storage_mb/1024).toFixed(1) + ' GB' : p.max_storage_mb + ' MB'}` : '∞'} />
-                                </div>
+                            {/* Header — plan name + status pill */}
+                            <div className="plan-card-v3__header">
+                                <div className="plan-card-v3__name">{p.name || p.code}</div>
+                                {isHighlighted && <span className="plan-pill plan-pill--popular">POPULAR</span>}
+                                {!p.is_public && !isHighlighted && <span className="plan-pill plan-pill--hidden">HIDDEN</span>}
                             </div>
 
-                            {/* Gradient CTA strip — overlaps the card's bottom edge.
-                                zIndex must be > 0 so the button sits ABOVE the card
-                                and stays clickable; zIndex: -1 hid it behind the
-                                white card body and ate the click event. */}
-                            <button
-                                type="button"
-                                onClick={() => setEditing({
-                                    ...p,
-                                    features: features.join('\n')
-                                })}
-                                style={{
-                                    width: 'calc(100% - 20px)',
-                                    margin: '-14px auto 0',
-                                    padding: '18px 20px',
-                                    border: 'none',
-                                    borderRadius: 18,
-                                    background: copy.ctaGradient,
-                                    color: '#fff',
-                                    fontSize: 16,
-                                    fontWeight: 700,
-                                    letterSpacing: '-0.01em',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    gap: 10,
-                                    boxShadow: '0 12px 28px rgba(0, 0, 0, 0.35)',
-                                    textShadow: '0 1px 2px rgba(0, 0, 0, 0.2)',
-                                    transition: 'filter 150ms ease, transform 150ms ease',
-                                    position: 'relative',
-                                    zIndex: 2
-                                }}
-                                onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.filter = 'brightness(1)'; }}
-                            >
-                                Edit this plan <span style={{ fontSize: 20 }}>→</span>
-                            </button>
+                            {/* Price — single line, scales to fit */}
+                            <div className="plan-card-v3__price-row">
+                                <span className="plan-card-v3__price">
+                                    {p.price_inr === 0 ? 'Free' : `₹${Number(p.price_inr).toLocaleString('en-IN')}`}
+                                </span>
+                                {p.price_inr > 0 && (
+                                    <span className="plan-card-v3__cycle">
+                                        /{p.billing_cycle === 'yearly' ? 'yr' : 'mo'}
+                                    </span>
+                                )}
+                            </div>
 
-                            {/* Footnote outside the card */}
-                            <div style={{
-                                fontSize: 12, color: 'rgba(255, 255, 255, 0.55)',
-                                marginTop: 22, padding: '0 8px', lineHeight: 1.5
-                            }}>
-                                <span style={{ fontWeight: 700, color: 'rgba(255, 255, 255, 0.75)' }}>*Ideal for:</span> {copy.idealFor}
+                            {/* Trial chip if applicable */}
+                            {Number(p.trial_days) > 0 && (
+                                <div className="plan-card-v3__trial" style={{ color: accent, borderColor: `${accent}40` }}>
+                                    {p.trial_days}-day free trial
+                                </div>
+                            )}
+
+                            {/* Limits — uniform 2×3 grid with infinity glyph for unlimited */}
+                            <div className="plan-card-v3__limits">
+                                <PlanLimit label="Events"    value={p.max_events} />
+                                <PlanLimit label="Speakers"  value={p.max_speakers} />
+                                <PlanLimit label="Attendees" value={p.max_attendees} />
+                                <PlanLimit label="Team"      value={p.max_users} />
+                                <PlanLimit label="Storage"   value={storageLabel} isString />
+                            </div>
+
+                            {/* Features — first 5 only; rest is summarised so the cards stay
+                                the same height. Full list shows in the edit modal. */}
+                            {features.length > 0 && (
+                                <ul className="plan-card-v3__features">
+                                    {features.slice(0, 5).map((f, i) => {
+                                        const [title] = String(f).split('|').map(s => s.trim());
+                                        return (
+                                            <li key={i}>
+                                                <span className="plan-card-v3__check" style={{ background: gradient }}>✓</span>
+                                                <span>{title}</span>
+                                            </li>
+                                        );
+                                    })}
+                                    {features.length > 5 && (
+                                        <li className="plan-card-v3__more">+ {features.length - 5} more</li>
+                                    )}
+                                </ul>
+                            )}
+
+                            <div className="plan-card-v3__footer">
+                                <button
+                                    type="button"
+                                    className="plan-card-v3__edit"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditing({ ...p, features: features.join('\n') });
+                                    }}
+                                    style={{ background: gradient }}
+                                >
+                                    Edit plan
+                                </button>
                             </div>
                         </div>
                     );
