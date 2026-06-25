@@ -5,7 +5,7 @@ import Cropper from 'react-cropper';
 import 'cropperjs/dist/cropper.css';
 import { Button, Form, Spinner, Accordion, Tabs, Tab } from 'react-bootstrap';
 import { toPng } from 'html-to-image';
-import { BsDownload, BsArrowLeft, BsArrowsMove, BsLayoutTextWindow, BsShieldLock, BsMagic, BsStars, BsChatDots, BsSend, BsRobot, BsImage, BsCheckCircleFill, BsTextLeft, BsDistributeVertical, BsLightningChargeFill } from 'react-icons/bs';
+import { BsDownload, BsArrowLeft, BsArrowsMove, BsLayoutTextWindow, BsShieldLock, BsMagic, BsStars, BsChatDots, BsSend, BsRobot, BsImage, BsCheckCircleFill, BsTextLeft, BsTextCenter, BsTextRight, BsDistributeVertical, BsLightningChargeFill } from 'react-icons/bs';
 import { getEvent, updateEventTemplate, updateEventAttendingTemplate, bulkApplySNSTemplate, bulkApplyAttendingTemplate, uploadImage, getSpeakers } from '../services/api';
 import Draggable from 'react-draggable';
 import { getImageUrl } from '../utils/imageUrl';
@@ -143,7 +143,10 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
     const [customSize, setCustomSize] = useState({ width: 1080, height: 1080, background: 'White' });
     const [isLocked, setIsLocked] = useState(false);
     const [groupMove, setGroupMove] = useState(false);
-    const [spacingPct, setSpacingPct] = useState(2);
+    // Vertical spacing between text elements, in **pixels** (canvas-space).
+    // Stored as px so the input shows real, intuitive values like "24" instead
+    // of "2.2%"; converted to a fraction of canvas height at apply time.
+    const [spacingPx, setSpacingPx] = useState(24);
 
     const formatPresets = {
         'Instagram': [
@@ -436,8 +439,11 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
             return;
         }
 
-        const parsed = Number(spacingPct);
-        const gap = (Number.isFinite(parsed) && parsed >= 0 ? parsed : 7) / 100;
+        // Input is in px (canvas-space); convert to a fraction of canvas
+        // height to match position storage. Fall back to ~24px if blank.
+        const parsedPx = Number(spacingPx);
+        const safePx = Number.isFinite(parsedPx) && parsedPx >= 0 ? parsedPx : 24;
+        const gap = canvasSize.height > 0 ? safePx / canvasSize.height : 0;
 
         const sortedByY = [...visibleKeys].sort(
             (a, b) => (positions[a]?.y ?? 0) - (positions[b]?.y ?? 0)
@@ -835,9 +841,43 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                 <Accordion.Item eventKey="5" className="bg-transparent border-0 mb-2">
                                     <Accordion.Header>Alignment</Accordion.Header>
                                     <Accordion.Body>
-                                        <Button variant="outline-light" size="sm" className="w-100 mb-2" onClick={arrangeTextOnSingleLine} title="Align all text to the same column as the first element">
+                                        {/* Left / Center / Right — applies textAlign to every visible text
+                                            element at once. Per-element editing would be cleaner but for the
+                                            master template a global flip is the common case. */}
+                                        <div className="d-flex gap-1 mb-2" role="group" aria-label="Text alignment">
+                                            {[
+                                                { val: 'left',   icon: <BsTextLeft />,   label: 'Left' },
+                                                { val: 'center', icon: <BsTextCenter />, label: 'Center' },
+                                                { val: 'right',  icon: <BsTextRight />,  label: 'Right' },
+                                            ].map(({ val, icon, label }) => {
+                                                // Active if every visible text element matches this value.
+                                                const visible = Object.entries(elements).filter(([, el]) => el.show);
+                                                const isActive = visible.length > 0 && visible.every(([, el]) => (el.textAlign || 'left') === val);
+                                                return (
+                                                    <Button
+                                                        key={val}
+                                                        variant={isActive ? 'accent' : 'outline-light'}
+                                                        size="sm"
+                                                        className="flex-grow-1"
+                                                        onClick={() => setElements(prev => {
+                                                            const next = { ...prev };
+                                                            for (const k of Object.keys(next)) {
+                                                                if (next[k]?.show) next[k] = { ...next[k], textAlign: val };
+                                                            }
+                                                            return next;
+                                                        })}
+                                                        title={`Align all visible text to the ${label.toLowerCase()}`}
+                                                    >
+                                                        {icon}
+                                                    </Button>
+                                                );
+                                            })}
+                                        </div>
+
+                                        <Button variant="outline-light" size="sm" className="w-100 mb-2" onClick={arrangeTextOnSingleLine} title="Snap all text to the same horizontal column">
                                             <BsTextLeft className="me-2" /> Align text to one column
                                         </Button>
+
                                         <div className="d-flex align-items-center gap-2 mb-2">
                                             <BsDistributeVertical />
                                             <span className="small">Space</span>
@@ -845,14 +885,14 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                                 type="number"
                                                 size="sm"
                                                 min="0"
-                                                max="50"
-                                                step="0.5"
+                                                max="500"
+                                                step="1"
                                                 style={{ width: 70 }}
-                                                value={spacingPct}
-                                                onChange={e => setSpacingPct(e.target.value)}
-                                                title="Vertical gap between text elements as a % of canvas height"
+                                                value={spacingPx}
+                                                onChange={e => setSpacingPx(e.target.value)}
+                                                title="Vertical gap between text elements (in pixels, canvas-space)"
                                             />
-                                            <span className="small">%</span>
+                                            <span className="small">px</span>
                                             <Button
                                                 variant="outline-light"
                                                 size="sm"
@@ -946,7 +986,7 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                 {/* Text Elements */}
                                 {Object.entries(elements).map(([key, el]) => el.show && positions[key] && (
                                     <Draggable key={key} nodeRef={elementRefs.current[key] || dragRefs[key]} bounds="parent" position={{ x: (positions[key]?.x ?? 0.25) * canvasSize.width, y: (positions[key]?.y ?? 0.5) * canvasSize.height }} onDrag={(e, d) => handleTextDrag(key, d)}>
-                                        <div ref={elementRefs.current[key] || dragRefs[key]} style={{ position: 'absolute', color: el.color, fontSize: el.fontSize, fontFamily: el.fontFamily, fontWeight: el.fontWeight, letterSpacing: `${el.letterSpacing || 0}px`, cursor: 'move', zIndex: 20, whiteSpace: 'pre-wrap' }}>
+                                        <div ref={elementRefs.current[key] || dragRefs[key]} style={{ position: 'absolute', color: el.color, fontSize: el.fontSize, fontFamily: el.fontFamily, fontWeight: el.fontWeight, letterSpacing: `${el.letterSpacing || 0}px`, textAlign: el.textAlign || 'left', cursor: 'move', zIndex: 20, whiteSpace: 'pre-wrap' }}>
                                             {el.text}
                                         </div>
                                     </Draggable>
