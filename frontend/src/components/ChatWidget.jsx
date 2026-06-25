@@ -1288,6 +1288,9 @@ export default function ChatWidget() {
                         <ShareSpeakerModal
                             onClose={() => setShowSpeaker(false)}
                             onSubmit={handleShareSpeaker}
+                            initialEventId={activeChat?.type === 'group' ? activeChat?.event_id : null}
+                            initialEventTitle={activeChat?.type === 'group' ? activeChat?.event_title : null}
+                            lockEvent={activeChat?.type === 'group' && !!activeChat?.event_id}
                         />
                     )}
                     {forwardMsg && (
@@ -1675,7 +1678,7 @@ export default function ChatWidget() {
                                                 : `${g.member_count} members${g.event_title ? ' · ' + g.event_title : ''}`}
                                             time={g.last_message?.created_at}
                                             badge={g.unread_count}
-                                            onClick={() => openChat({ type: 'group', id: g.id, name: g.name, member_count: g.member_count, photo_url: g.photo_url })}
+                                            onClick={() => openChat({ type: 'group', id: g.id, name: g.name, member_count: g.member_count, photo_url: g.photo_url, event_id: g.event_id, event_title: g.event_title })}
                                         />
                                     ))
                                 )}
@@ -2742,12 +2745,16 @@ function SpeakerCard({ m, onOpen }) {
     );
 }
 
-function ShareSpeakerModal({ onClose, onSubmit }) {
+function ShareSpeakerModal({ onClose, onSubmit, initialEventId = null, initialEventTitle = null, lockEvent = false }) {
     const [events, setEvents] = useState([]);
     const [name, setName] = useState('');
     const [designation, setDesignation] = useState('');
     const [company, setCompany] = useState('');
-    const [eventId, setEventId] = useState('');
+    // For group chats scoped to an event, pre-select that event so the new
+    // speaker lands on the right event without the user having to scan a list
+    // of unrelated events. The dropdown is also locked in that case to keep
+    // the speaker tied to the group's event.
+    const [eventId, setEventId] = useState(initialEventId ? String(initialEventId) : '');
     const [photo, setPhoto] = useState(null);
     const [preview, setPreview] = useState('');
     const [error, setError] = useState('');
@@ -2875,9 +2882,13 @@ function ShareSpeakerModal({ onClose, onSubmit }) {
                     </div>
                 </div>
                 <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company *" style={inputStyle} />
-                <select value={eventId} onChange={e => setEventId(e.target.value)}
-                    style={{ ...inputStyle, marginTop: 6 }}>
+                <select value={eventId} onChange={e => setEventId(e.target.value)} disabled={lockEvent}
+                    style={{ ...inputStyle, marginTop: 6, opacity: lockEvent ? 0.85 : 1, cursor: lockEvent ? 'not-allowed' : 'pointer' }}
+                    title={lockEvent ? 'This group is scoped to a specific event' : undefined}>
                     <option value="">— Select event *—</option>
+                    {lockEvent && initialEventId && !events.some(ev => String(ev.id) === String(initialEventId)) && (
+                        <option value={initialEventId} style={{ background: '#1a1a2e' }}>{initialEventTitle || `Event #${initialEventId}`}</option>
+                    )}
                     {events.map(ev => <option key={ev.id} value={ev.id} style={{ background: '#1a1a2e' }}>{ev.title}</option>)}
                 </select>
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 12 }}>
