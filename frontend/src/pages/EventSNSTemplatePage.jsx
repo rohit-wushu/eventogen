@@ -807,12 +807,50 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                                 <div className="col-12 mt-2">
                                                     <label className="small muted-label">Font</label>
                                                     <Form.Select size="sm" className="form-select-dark" value={el.fontFamily} onChange={e => updateElement(key, 'fontFamily', e.target.value)}>
-                                                        <option value="Inter">Inter</option>
-                                                        <option value="Montserrat">Montserrat</option>
-                                                        <option value="Poppins">Poppins</option>
-                                                        <option value="Roboto">Roboto</option>
-                                                        <option value="Playfair Display">Playfair (Serif)</option>
-                                                        <option value="Lora">Lora (Serif)</option>
+                                                        <optgroup label="Sans-serif">
+                                                            <option value="Inter">Inter</option>
+                                                            <option value="Montserrat">Montserrat</option>
+                                                            <option value="Poppins">Poppins</option>
+                                                            <option value="Roboto">Roboto</option>
+                                                            <option value="Open Sans">Open Sans</option>
+                                                            <option value="Lato">Lato</option>
+                                                            <option value="Nunito">Nunito</option>
+                                                            <option value="Raleway">Raleway</option>
+                                                            <option value="Work Sans">Work Sans</option>
+                                                            <option value="Manrope">Manrope</option>
+                                                            <option value="DM Sans">DM Sans</option>
+                                                            <option value="Plus Jakarta Sans">Plus Jakarta Sans</option>
+                                                            <option value="Outfit">Outfit</option>
+                                                            <option value="Source Sans 3">Source Sans 3</option>
+                                                            <option value="Oswald">Oswald (Condensed)</option>
+                                                            <option value="Bebas Neue">Bebas Neue (Display)</option>
+                                                        </optgroup>
+                                                        <optgroup label="Serif">
+                                                            <option value="Playfair Display">Playfair Display</option>
+                                                            <option value="Lora">Lora</option>
+                                                            <option value="Merriweather">Merriweather</option>
+                                                            <option value="Cormorant Garamond">Cormorant Garamond</option>
+                                                            <option value="EB Garamond">EB Garamond</option>
+                                                            <option value="Crimson Pro">Crimson Pro</option>
+                                                            <option value="Source Serif 4">Source Serif 4</option>
+                                                            <option value="DM Serif Display">DM Serif Display</option>
+                                                        </optgroup>
+                                                        <optgroup label="Display & Decorative">
+                                                            <option value="Anton">Anton</option>
+                                                            <option value="Archivo Black">Archivo Black</option>
+                                                            <option value="Righteous">Righteous</option>
+                                                            <option value="Abril Fatface">Abril Fatface</option>
+                                                        </optgroup>
+                                                        <optgroup label="Handwriting & Script">
+                                                            <option value="Caveat">Caveat</option>
+                                                            <option value="Dancing Script">Dancing Script</option>
+                                                            <option value="Pacifico">Pacifico</option>
+                                                            <option value="Great Vibes">Great Vibes</option>
+                                                        </optgroup>
+                                                        <optgroup label="Monospace">
+                                                            <option value="JetBrains Mono">JetBrains Mono</option>
+                                                            <option value="Fira Code">Fira Code</option>
+                                                        </optgroup>
                                                     </Form.Select>
                                                 </div>
                                             </div>
@@ -878,9 +916,9 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                             <BsTextLeft className="me-2" /> Align text to one column
                                         </Button>
 
-                                        <div className="d-flex align-items-center gap-2 mb-2">
+                                        <div className="d-flex align-items-center gap-2 mb-2" style={{ color: '#e0e0ec' }}>
                                             <BsDistributeVertical />
-                                            <span className="small">Space</span>
+                                            <span className="small" style={{ color: '#e0e0ec' }}>Space</span>
                                             <Form.Control
                                                 type="number"
                                                 size="sm"
@@ -892,7 +930,7 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                                 onChange={e => setSpacingPx(e.target.value)}
                                                 title="Vertical gap between text elements (in pixels, canvas-space)"
                                             />
-                                            <span className="small">px</span>
+                                            <span className="small" style={{ color: '#e0e0ec' }}>px</span>
                                             <Button
                                                 variant="outline-light"
                                                 size="sm"
@@ -986,7 +1024,24 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                                 {/* Text Elements */}
                                 {Object.entries(elements).map(([key, el]) => el.show && positions[key] && (
                                     <Draggable key={key} nodeRef={elementRefs.current[key] || dragRefs[key]} bounds="parent" position={{ x: (positions[key]?.x ?? 0.25) * canvasSize.width, y: (positions[key]?.y ?? 0.5) * canvasSize.height }} onDrag={(e, d) => handleTextDrag(key, d)}>
-                                        <div ref={elementRefs.current[key] || dragRefs[key]} style={{ position: 'absolute', color: el.color, fontSize: el.fontSize, fontFamily: el.fontFamily, fontWeight: el.fontWeight, letterSpacing: `${el.letterSpacing || 0}px`, textAlign: el.textAlign || 'left', cursor: 'move', zIndex: 20, whiteSpace: 'pre-wrap' }}>
+                                        {/* textAlign on a tight-box absolute element does nothing unless
+                                            we also re-anchor the box: shifting it -50% / -100% on X makes
+                                            the Draggable position represent the centre / right edge of
+                                            the text instead of its left edge, so 'center' and 'right'
+                                            actually visually align. */}
+                                        <div ref={elementRefs.current[key] || dragRefs[key]} style={{
+                                            position: 'absolute',
+                                            color: el.color,
+                                            fontSize: el.fontSize,
+                                            fontFamily: el.fontFamily,
+                                            fontWeight: el.fontWeight,
+                                            letterSpacing: `${el.letterSpacing || 0}px`,
+                                            textAlign: el.textAlign || 'left',
+                                            transform: el.textAlign === 'center' ? 'translateX(-50%)' :
+                                                       el.textAlign === 'right'  ? 'translateX(-100%)' :
+                                                       'none',
+                                            cursor: 'move', zIndex: 20, whiteSpace: 'pre-wrap',
+                                        }}>
                                             {el.text}
                                         </div>
                                     </Draggable>
