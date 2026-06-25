@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" fill="none">
+  <!-- Outer bold A -->
+  <path d="M110 14 L24 206 L62 206 L82 158 L138 158 L158 206 L196 206 Z M94 130 L110 90 L126 130 Z"
+        fill="#1d4ed8"/>
+  <!-- Inner smaller offset A -->
+  <path d="M126 58 L70 184 L96 184 L108 154 L150 154 L162 184 L188 184 Z M118 132 L129 104 L140 132 Z"
+        fill="#3b82f6" opacity="0.9"/>
+</svg>

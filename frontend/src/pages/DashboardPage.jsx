@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import DashboardAnnouncements from '../components/DashboardAnnouncements';
 import PlanUsageCard from '../components/PlanUsageCard';
 import UpgradeBanner from '../components/UpgradeBanner';
+import AppLoader from '../components/AppLoader';
 
 export default function DashboardPage() {
     const { user } = useAuth();
@@ -18,6 +19,7 @@ export default function DashboardPage() {
     const [employeeAgendas, setEmployeeAgendas] = useState([]);
     const [employeeEvent, setEmployeeEvent] = useState(null);
     const [fetchError, setFetchError] = useState(null);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         const loadStats = async () => {
@@ -99,6 +101,8 @@ export default function DashboardPage() {
                 }
             } catch (err) {
                 console.error('Dashboard Stats Error:', err);
+            } finally {
+                setLoading(false);
             }
         };
         loadStats();
@@ -112,6 +116,14 @@ export default function DashboardPage() {
         { title: 'Attendees', value: stats.attendees, icon: BsPeopleFill, color: 'sky' },
         { title: 'Travel Budget', value: '₹' + Number(stats.travelBudget).toLocaleString('en-IN'), icon: BsCurrencyRupee, color: 'emerald' },
     ];
+
+    if (loading) {
+        return (
+            <div className="dashboard-loader-wrap">
+                <AppLoader size="xl" label="Loading dashboard…" />
+            </div>
+        );
+    }
 
     return (
         <div className="animate-in dashboard-glass">

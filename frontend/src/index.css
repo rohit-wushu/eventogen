@@ -4561,3 +4561,97 @@ div.api-ep-desc,
         z-index: 1060 !important;
     }
 }
+
+/* ─── Branded AppLoader (animated "A" mark) ─── */
+.app-loader-wrap { color: var(--text-primary); }
+.dashboard-loader-wrap {
+    min-height: calc(100vh - 180px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.app-loader {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transform-origin: center;
+    animation: app-loader-bob 1.6s ease-in-out infinite;
+    overflow: visible;
+}
+
+.app-loader-img {
+    width: 88%;
+    height: 88%;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+    filter: drop-shadow(0 8px 22px rgba(29, 78, 216, 0.45));
+    animation: app-loader-pulse-inner 1.6s ease-in-out infinite;
+}
+svg.app-loader-img {
+    overflow: visible;
+}
+
+.app-loader-ring {
+    position: absolute;
+    inset: -14%;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: rgba(59, 130, 246, 0.85);
+    border-right-color: rgba(29, 78, 216, 0.55);
+    animation: app-loader-spin 1.2s linear infinite;
+    pointer-events: none;
+}
+
+.app-loader-label {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: linear-gradient(90deg, #93c5fd, #60a5fa, #93c5fd);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: app-loader-shimmer 2.4s linear infinite;
+}
+
+.visually-hidden {
+    position: absolute !important;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+@keyframes app-loader-bob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-4px); }
+}
+@keyframes app-loader-pulse-outer {
+    0%, 100% { transform: scale(1);    opacity: 1; }
+    50%      { transform: scale(0.92); opacity: 0.85; }
+}
+@keyframes app-loader-pulse-inner {
+    0%, 100% { transform: scale(0.94); opacity: 0.75; }
+    50%      { transform: scale(1.05); opacity: 1; }
+}
+@keyframes app-loader-spin {
+    to { transform: rotate(360deg); }
+}
+@keyframes app-loader-shimmer {
+    0%   { background-position: 0% center; }
+    100% { background-position: 200% center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-loader,
+    .app-loader-img,
+    .app-loader-ring,
+    .app-loader-label { animation: none !important; }
+}
