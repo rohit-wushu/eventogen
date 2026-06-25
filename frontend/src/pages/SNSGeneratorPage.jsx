@@ -145,7 +145,11 @@ function SNSGeneratorInternal({ cardType = 'speaker' }) {
     const [event, setEvent] = useState(null);
     const [isLocked, setIsLocked] = useState(false);
     const [groupMove, setGroupMove] = useState(false);
-    const [spacingPct, setSpacingPct] = useState(2);
+    // Vertical spacing between text elements, in **pixels** (canvas-space).
+    // Stored as px so the input shows real values like '24'; converted to a
+    // fraction of canvas height at apply time so the visual result is the
+    // same regardless of canvas dimensions.
+    const [spacingPx, setSpacingPx] = useState(24);
     // After a successful save we get back a server path (e.g. /uploads/...).
     // Sharing needs an absolute URL, so we hold on to whatever Save returned
     // (preferred — it's the freshly-rendered version) and fall back to the
@@ -470,8 +474,11 @@ function SNSGeneratorInternal({ cardType = 'speaker' }) {
             return;
         }
 
-        const parsed = Number(spacingPct);
-        const gap = (Number.isFinite(parsed) && parsed >= 0 ? parsed : 7) / 100;
+        // Input is in px; convert to a fraction of canvas height to match
+        // position storage. Fall back to ~24px when blank.
+        const parsedPx = Number(spacingPx);
+        const safePx = Number.isFinite(parsedPx) && parsedPx >= 0 ? parsedPx : 24;
+        const gap = canvasSize.height > 0 ? safePx / canvasSize.height : 0;
 
         const sortedByY = [...visibleKeys].sort(
             (a, b) => (positions[a]?.y ?? 0) - (positions[b]?.y ?? 0)
@@ -1142,21 +1149,21 @@ function SNSGeneratorInternal({ cardType = 'speaker' }) {
                                     <BsArrowsMove className="me-2" /> {groupMove ? 'Group: ON' : 'Group: OFF'}
                                 </Button>
                             </div>
-                            <div className="d-flex align-items-center gap-2">
+                            <div className="d-flex align-items-center gap-2" style={{ color: '#e0e0ec' }}>
                                 <BsDistributeVertical />
-                                <span className="small">Space</span>
+                                <span className="small" style={{ color: '#e0e0ec' }}>Space</span>
                                 <Form.Control
                                     type="number"
                                     size="sm"
                                     min="0"
-                                    max="50"
-                                    step="0.5"
+                                    max="500"
+                                    step="1"
                                     style={{ width: 70 }}
-                                    value={spacingPct}
-                                    onChange={e => setSpacingPct(e.target.value)}
-                                    title="Vertical gap between text elements as a % of canvas height"
+                                    value={spacingPx}
+                                    onChange={e => setSpacingPx(e.target.value)}
+                                    title="Vertical gap between text elements (in pixels, canvas-space)"
                                 />
-                                <span className="small">%</span>
+                                <span className="small" style={{ color: '#e0e0ec' }}>px</span>
                                 <Button
                                     variant="outline-light"
                                     size="sm"
