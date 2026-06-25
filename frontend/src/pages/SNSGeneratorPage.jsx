@@ -304,15 +304,18 @@ function SNSGeneratorInternal({ cardType = 'speaker' }) {
                                         const next = { ...prev };
                                         Object.keys(design.elements).forEach(k => {
                                             if (next[k]) {
-                                                // For speaker cards, the three standard slots
-                                                // (name/designation/company) hold *speaker data*
-                                                // that updates as the speaker row changes — so we
-                                                // keep the freshly-seeded text and overlay only the
-                                                // visual props from the saved design. For attending
-                                                // cards the slots hold operator-edited copy ("I am
-                                                // attending", etc.), so we restore the saved text.
+                                                // For BOTH speaker and attending cards, the three
+                                                // standard slots (name/designation/company) hold
+                                                // dynamic data — speaker info for normal cards, and
+                                                // the auto-composed "I am attending / <event> / <who>"
+                                                // for attending cards. Either way, the freshly-seeded
+                                                // text values are the right thing to render; the
+                                                // master template's `text` for those slots is just
+                                                // placeholder copy from the editor and should never
+                                                // overwrite the per-speaker data at generation time.
+                                                // Custom elements still restore their saved text.
                                                 const isStandardField = ['name', 'designation', 'company'].includes(k);
-                                                const keepSeededText = isStandardField && !isAttending;
+                                                const keepSeededText = isStandardField;
                                                 next[k] = {
                                                     ...next[k],
                                                     ...design.elements[k],
