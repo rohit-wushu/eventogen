@@ -1216,13 +1216,13 @@ function BulkSNSModal({ show, onHide, speakers, filterEvent, onComplete, cardTyp
                             // big slot reads "I am attending", the mid slot reads the
                             // event title, and the small slot reads who's posting.
                             let text;
-                            if (isAttending) {
-                                if (key === 'name')             text = 'I am attending';
-                                else if (key === 'designation') text = event?.title || '';
-                                else                            text = [currentSpeaker.name, currentSpeaker.designation, currentSpeaker.company].filter(Boolean).join(' · ');
-                            } else {
-                                text = key === 'name' ? currentSpeaker.name : key === 'designation' ? currentSpeaker.designation : currentSpeaker.company;
-                            }
+                            // Both modes now render the same way: the three standard
+                            // slots hold real speaker data. Operators who want
+                            // "I am attending" / event title text on the card add
+                            // them as custom text elements in the master template.
+                            text = key === 'name' ? currentSpeaker.name
+                                 : key === 'designation' ? currentSpeaker.designation
+                                 : currentSpeaker.company;
                             return (
                                 <div key={key} style={{ position: 'absolute', left: pos.x * canvasSize.width, top: pos.y * canvasSize.height, color: el.color, fontSize: el.fontSize, fontFamily: el.fontFamily, fontWeight: el.fontWeight, letterSpacing: `${el.letterSpacing || 0}px`, textDecoration: ['underline','overline'].includes(el.textDecoration) ? el.textDecoration : 'none', textTransform: ['uppercase','capitalize'].includes(el.textDecoration) ? el.textDecoration : 'none', whiteSpace: 'pre-wrap', zIndex: 20 }}>
                                     {text || ''}

@@ -253,11 +253,13 @@ function SNSGeneratorInternal({ cardType = 'speaker' }) {
                         // — so the prominent slot is the slogan, designation
                         // shows the event title, and company shows who's
                         // posting. The operator can edit any of it.
-                        const seedName        = isAttending ? 'I am attending' : (s.name || '');
-                        const seedDesignation = isAttending ? (evt.title || s.event_title || '') : (s.designation || 'Speaker');
-                        const seedCompany     = isAttending
-                            ? [s.name, s.designation, s.company].filter(Boolean).join(' · ')
-                            : (s.company || '');
+                        // Both modes seed the same way now: the three standard
+                        // slots hold real speaker data. "I am attending" / event-
+                        // title copy lives as custom text elements in the master
+                        // template, so the operator controls placement & styling.
+                        const seedName        = s.name || '';
+                        const seedDesignation = s.designation || 'Speaker';
+                        const seedCompany     = s.company || '';
 
                         setElements(prev => ({
                             ...prev,
