@@ -6,7 +6,7 @@ import 'cropperjs/dist/cropper.css';
 import { Button, Form, Spinner, Accordion, Tabs, Tab } from 'react-bootstrap';
 import { toPng } from 'html-to-image';
 import { BsDownload, BsArrowLeft, BsArrowsMove, BsLayoutTextWindow, BsShieldLock, BsMagic, BsStars, BsChatDots, BsSend, BsRobot, BsImage, BsCheckCircleFill, BsTextLeft, BsDistributeVertical, BsLightningChargeFill } from 'react-icons/bs';
-import { getEvent, updateEventTemplate, updateEventAttendingTemplate, bulkApplySNSTemplate, bulkApplyAttendingTemplate, uploadImage } from '../services/api';
+import { getEvent, updateEventTemplate, updateEventAttendingTemplate, bulkApplySNSTemplate, bulkApplyAttendingTemplate, uploadImage, getSpeakers } from '../services/api';
 import Draggable from 'react-draggable';
 import { getImageUrl } from '../utils/imageUrl';
 
@@ -262,6 +262,19 @@ function TemplateDesignerInternal({ cardType = 'speaker' }) {
                 if (evt.sns_card_bg_url) {
                     setBackground(getImageUrl(evt.sns_card_bg_url));
                 }
+
+                // Seed the placeholder photo with this event's first speaker so
+                // the editor renders a realistic preview out of the box — no
+                // need for the operator to upload a stand-in image. Falls back
+                // to the empty placeholder if the event has no speakers yet,
+                // or the API call fails.
+                getSpeakers(id)
+                    .then(sr => {
+                        const list = Array.isArray(sr.data) ? sr.data : [];
+                        const first = list.find(s => s.photo_url) || list[0];
+                        if (first?.photo_url) setImage(getImageUrl(first.photo_url));
+                    })
+                    .catch(() => { /* leave placeholder empty */ });
 
                 // Restore Template if exists, otherwise use default 1080x1080 format.
                 // Each card type reads from its own column so layouts stay independent.
