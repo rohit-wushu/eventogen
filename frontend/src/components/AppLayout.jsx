@@ -271,7 +271,9 @@ export default function AppLayout() {
 
     const handleLogout = () => {
         logout();
-        navigate('/login');
+        // Hard reload to '/' so all in-memory state (auth, branding cache,
+        // route history) resets cleanly — same as opening the app fresh.
+        window.location.href = '/';
     };
 
     const handleChangePassword = async (e) => {
